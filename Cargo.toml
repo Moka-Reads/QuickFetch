@@ -1,0 +1,21 @@
+[package]
+name = "quickfetch"
+description = "A library built to fetch multiple requests quickly!"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78" # plan on using diagnostics
+license = "MIT"
+authors = ["Mustafif Khan"]
+
+[[example]]
+name = "mufiz"
+path = "examples/mufiz.rs"
+
+[dependencies]
+anyhow = "1.0.86"
+futures = "0.3.30"
+rayon = "1.10.0"
+reqwest = { version = "0.12.4", features = ["json", "brotli"] }
+sled = "0.34.7"
+tokio = { version = "1.37.0", features = ["full"] }
+url = "2.5.0"
