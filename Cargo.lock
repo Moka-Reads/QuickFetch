@@ -810,6 +810,7 @@ dependencies = [
  "futures",
  "rayon",
  "reqwest",
+ "serde",
  "sled",
  "tokio",
  "url",

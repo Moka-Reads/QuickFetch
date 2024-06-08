@@ -19,3 +19,4 @@ reqwest = { version = "0.12.4", features = ["json", "brotli"] }
 sled = "0.34.7"
 tokio = { version = "1.37.0", features = ["full"] }
 url = "2.5.0"
+serde = { version = "1.0.203", features = ["derive"] }
