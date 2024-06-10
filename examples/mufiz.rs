@@ -1,8 +1,9 @@
-use std::path::PathBuf;
-use quickfetch::Fetcher;
 use anyhow::Result;
+use quickfetch::Fetcher;
+use std::path::PathBuf;
 #[tokio::main]
-async fn main() -> Result<()>{
+async fn main() -> Result<()> {
+    quickfetch::pretty_env_logger::init();
     let urls = vec!["https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz-0.6.0-1.aarch64.rpm", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz-0.6.0-1.i386.rpm", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz-0.6.0-1.mips.rpm", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz-0.6.0-1.mips64.rpm", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz-0.6.0-1.mips64el.rpm", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz-0.6.0-1.mipsel.rpm", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz-0.6.0-1.ppc.rpm", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz-0.6.0-1.ppc64.rpm", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz-0.6.0-1.ppc64le.rpm", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz-0.6.0-1.riscv64.rpm", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz-0.6.0-1.x86_64.rpm", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz_0.6.0_aarch64-linux-gnu.zip", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz_0.6.0_aarch64-linux-musl.zip", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz_0.6.0_aarch64-linux.zip", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz_0.6.0_aarch64-macos.zip", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz_0.6.0_aarch64-windows-gnu.zip", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz_0.6.0_aarch64-windows.zip", "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz_0.6.0_amd64.deb", "https://github.com/Mustafif/MufiZ/releases/download
 /v0.6.0/mufiz_0.6.0_arm-linux-gnueabihf.zip", "https
 ://github.com/Mustafif/MufiZ/releases/download/v0.6.
@@ -68,7 +69,7 @@ ttps://github.com/Mustafif/MufiZ/releases/download/v
 indows-gnu.zip", "https://github.com/Mustafif/MufiZ/
 releases/download/v0.6.0/mufiz_0.6.0_x86_64-windows.zip"];
 
-    let urls: Vec<String> = urls.iter().map(|x|x.to_string()).collect();
+    let urls: Vec<String> = urls.iter().map(|x| x.to_string()).collect();
     let mut fetcher = Fetcher::new(&urls, "mufiz")?;
     fetcher.fetch().await?;
     fetcher.write_all(PathBuf::from("pkgs")).await?;

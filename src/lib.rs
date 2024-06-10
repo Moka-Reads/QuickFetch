@@ -1,35 +1,66 @@
-use std::collections::binary_heap::Iter;
-use std::path::PathBuf;
+pub mod package;
+
+#[macro_use]
+extern crate log;
+pub use pretty_env_logger;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
 use futures::future::join_all;
-use rayon::prelude::{IntoParallelIterator, ParallelIterator};
-use reqwest::Client;
-use sled::Db;
+use futures::StreamExt;
+use reqwest::{Client, Response};
+use sled::{Batch, Db, IVec};
 use tokio::fs::create_dir;
 use tokio::sync::RwLock;
 use url::Url;
 
-/// Entry trait that will be used to check if it has been modified
-/// so `db` can compare and swap, and also return the `url`.
-pub trait Entry{
-    fn is_modified(&self, other: &Self) -> bool;
-    fn url(&self) -> String;
-    fn entry_bytes(&self) -> &[u8];
+pub fn home_plus<P: AsRef<Path>>(sub_dir: P) -> PathBuf {
+    dirs::home_dir().unwrap().join(sub_dir)
 }
 
-impl Entry for String{
-    fn is_modified(&self, _other: &String) -> bool {
-        false // urls aren't modified
+/// Entry trait that will be used to check if it has been modified
+/// so `db` can compare and swap, and also return the `url`.
+pub trait Entry {
+    fn is_modified(&self, keys_iter: impl DoubleEndedIterator<Item=Result<IVec, sled::Error>>) -> Option<IVec>;
+    fn url(&self) -> String;
+    fn entry_bytes(&self) -> Vec<u8>;
+    fn log_cache(&self);
+    fn log_caching(&self);
+}
+
+impl Entry for String {
+    fn is_modified(&self, _keys_iter: impl DoubleEndedIterator<Item=Result<IVec, sled::Error>>) -> Option<IVec> {
+        None
     }
 
     fn url(&self) -> String {
         self.to_string()
     }
 
-    fn entry_bytes(&self) -> &[u8] {
-        self.as_bytes()
+    fn entry_bytes(&self) -> Vec<u8> {
+        self.as_bytes().to_vec()
+    }
+
+    fn log_cache(&self) {
+        info!("{} (cached)", self.url())
+    }
+
+    fn log_caching(&self) {
+        info!("{} caching", self.url())
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum ResponseMethod{
+    Bytes,
+    Chunk,
+    BytesStream
+}
+
+impl Default for ResponseMethod{
+    fn default() -> Self {
+        Self::Bytes
     }
 }
 
@@ -38,65 +69,76 @@ pub struct Fetcher<E: Entry> {
     pub entries: Vec<E>,
     db: Db,
     client: Client,
+    response_method: ResponseMethod,
 }
 
-#[derive(Debug, Clone)]
-pub struct EntryIterator<E: Entry>{
-    inner: std::vec::IntoIter<E>
-}
-
-impl <E: Entry> Iterator for EntryIterator<E>{
-    type Item = E;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
-    }
-}
-
-impl<E: Entry> IntoIterator for Fetcher<E> {
-    type Item = E;
-    type IntoIter = EntryIterator<E>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        EntryIterator {
-            inner: self.entries.into_iter()
-        }
-    }
-}
-
-impl<E: Entry + Clone + Send + Sync + 'static + Iterator> Fetcher<E> {
+impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     /// Create a new `Fetcher` instance with list of urls and cache db name
-    pub fn new(urls: &Vec<E>, name: &str) -> Result<Self> {
+    pub fn new(entries: &Vec<E>, name: &str) -> Result<Self> {
         let client = Client::builder()
             .brotli(true) // by default enable brotli compression
             .build()?;
 
         Ok(Self {
-            entries: urls.to_owned(),
+            entries: entries.to_owned(),
             db: sled::open(name)?,
             client,
+            response_method: ResponseMethod::default()
         })
-    }
-
-    pub fn iter(&self) -> EntryIterator<E>{
-        EntryIterator{
-            inner: self.entries.clone().into_iter()
-        }
     }
 
     pub fn set_client(&mut self, client: Client) {
         self.client = client;
     }
 
-    // TODO: switch from `println!` to logging `info`
+    pub fn set_response_method(&mut self, response_method: ResponseMethod){
+        self.response_method = response_method
+    }
+
+    async fn resp_bytes(&self, response: Response) -> Result<bytes::Bytes>{
+        match &self.response_method{
+            ResponseMethod::Bytes => {
+                let bytes = response.bytes().await?;
+                Ok(bytes)
+            },
+            ResponseMethod::BytesStream => {
+                let mut stream = response.bytes_stream();
+                let mut bytes = bytes::BytesMut::new();
+                while let Some(item) = stream.next().await{
+                    let b = item?;
+                    bytes.extend_from_slice(&b)
+                }
+
+                Ok(bytes.freeze())
+            },
+            ResponseMethod::Chunk => {
+                let mut bytes = bytes::BytesMut::new();
+                let mut response = response;
+                while let Some(chunk) = response.chunk().await?{
+                    bytes.extend_from_slice(&chunk)
+                }
+                Ok(bytes.freeze())
+            }
+        }
+    }
+
+    /// TODO!:Allow chunk and byte_stream methods
     async fn fetch_entry(&mut self, entry: E) -> Result<()> {
-        if self.db.get(&entry.url())?.is_some() {
-            // add some logic to compare and swap
-            println!("{} (cached)", entry.url());
-        } else {
+        if self.db.get(&entry.entry_bytes())?.is_some() {
+            entry.log_cache()
+        } else if let Some(old_key) = entry.is_modified(self.db.iter().keys()){
+           let mut batch = Batch::default();
+            batch.remove(old_key);
             let response = self.client.get(&entry.url()).send().await?;
-            let bytes = response.bytes().await?;
-            println!("{} caching", entry.url());
+            let bytes =  self.resp_bytes(response).await?;
+            entry.log_caching();
+            batch.insert(entry.entry_bytes(), bytes.as_ref());
+            self.db.apply_batch(batch)?;
+        }
+        else {
+            let response = self.client.get(&entry.url()).send().await?;
+            let bytes = self.resp_bytes(response).await?;
+            entry.log_caching();
             let _ = self.db.insert(entry.entry_bytes(), bytes.as_ref())?;
         }
         Ok(())
@@ -107,7 +149,7 @@ impl<E: Entry + Clone + Send + Sync + 'static + Iterator> Fetcher<E> {
         let mut tasks = Vec::new();
         let fetcher = Arc::new(RwLock::new(self.clone()));
 
-        for entry in self.iter().into_par_iter() {
+        for entry in self.entries.clone() {
             let fetcher = fetcher.clone();
             tasks.push(tokio::spawn(async move {
                 let mut fetcher = fetcher.write().await;
@@ -130,9 +172,14 @@ impl<E: Entry + Clone + Send + Sync + 'static + Iterator> Fetcher<E> {
         for entry in self.entries.clone() {
             let key = entry.url();
             let resp = self.db.get(&key)?;
-            let file_name = Url::parse(&key)?.path_segments().unwrap().last().unwrap().to_string();
+            let file_name = Url::parse(&key)?
+                .path_segments()
+                .unwrap()
+                .last()
+                .unwrap()
+                .to_string();
             let path = dir.join(file_name);
-            if !dir.exists(){
+            if !dir.exists() {
                 create_dir(&dir).await?;
             }
             if let Some(ivec) = resp {
