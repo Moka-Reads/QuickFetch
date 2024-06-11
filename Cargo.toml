@@ -3,9 +3,8 @@ name = "quickfetch"
 description = "A library built to fetch multiple requests quickly!"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.78" # plan on using diagnostics
 license = "MIT"
-authors = ["Mustafif Khan"]
+authors = ["Mustafif Khan", "MoKa Reads Foundation"]
 
 [[example]]
 name = "mufiz"

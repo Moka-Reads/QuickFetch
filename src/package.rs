@@ -58,18 +58,18 @@ impl Config {
     async fn from_file<P: AsRef<Path>>(path: P, mode: Mode) -> anyhow::Result<Self> {
         // read and verify versions
         let contents = read_to_string(path).await?;
-        let data: Vec<Package> = match mode {
-            Mode::Json => serde_json::from_str(&contents)?,
-            Mode::Toml => toml::from_str(&contents)?,
+        let data: Config = match mode {
+            Mode::Json => serde_json::from_str::<Config>(&contents)?,
+            Mode::Toml => toml::from_str::<Config>(&contents)?,
         };
 
-        for pkg in &data {
+        for pkg in &data.packages {
             if !pkg.verify_valid_version() {
                 return Err(anyhow!("Invalid Semantic Versioning Format"));
             }
         }
 
-        Ok(Config { packages: data })
+        Ok(data)
     }
 
     pub async fn from_json_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
