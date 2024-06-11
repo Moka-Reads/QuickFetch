@@ -2,7 +2,7 @@
 
 ## A Library to Fetch well Quickly...
 
-> :warning: WORK IN PROGRESS AND NOT READY TO BE USED YET
+> :warning: WORK IN PROGRESS AND NOT READY TO BE USED FOR PRODUCTION YET
 
 This library is built to handle multiple requests within a `Client` (`reqwest` client which will handle it all under a Client Pool)
 , cache the response results, and handle these in parallel and asynchronously. 
