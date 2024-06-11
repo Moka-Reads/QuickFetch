@@ -8,7 +8,7 @@ use quickfetch::Fetcher;
 #[tokio::main]
 async fn main() -> anyhow::Result<()>{
     pretty_env_logger::init();
-    let content = read_to_string("pkgs.toml").await?;
+    let content = read_to_string("examples/pkgs.toml").await?;
     let packages: Config = from_str(&content).unwrap();
 
     let mut fetcher: Fetcher<Package> = Fetcher::new(&packages.packages(), "mufiz")?;

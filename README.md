@@ -10,7 +10,13 @@ This library is built to handle multiple requests within a `Client` (`reqwest` c
 The goal is to be a one-stop shop for handling local package manager development to handle multiple 
 packages with a local cache to easily update, get and remove the different responses.
 
-## TODO 
+## Progress
 
-- [ ] Convert `url` approach to an `Entry` struct that is a serialized structure that will
-be deserialized as a key, which will handle being able to check modification, url, name, etc. 
+- [X] Set an `Entry` trait to be used as the key for the `db` cache and responsible for the `Fetcher<E: Entry>` structure. 
+- [X] Set different methods of handling the response data in the `Fetcher` structure, such as: 
+  - [X] `Bytes` for storing the whole response as bytes
+  - [X] `Chunks` for storing the response in chunks
+  - [X] `BytesStream` for storing the response in a stream of bytes
+- [X] Enable basic support for encryption and decryption of the response data using the `Entry` as the key. 
+- [X] Provide `Config` and `Package` as a minimal package 
+- [ ] Provide `GithubPackage` to handle packages that can be downloaded from Github Releases
