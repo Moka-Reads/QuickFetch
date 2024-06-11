@@ -51,6 +51,8 @@ pub trait Entry {
     fn log_cache(&self);
     /// Log that the entry is being cached
     fn log_caching(&self);
+
+    fn from_ivec(value: IVec) -> Self where Self:Sized;
 }
 
 impl Entry for String {
@@ -75,6 +77,10 @@ impl Entry for String {
 
     fn log_caching(&self) {
         info!("{} caching", self.url())
+    }
+
+    fn from_ivec(value: IVec) -> Self where Self: Sized {
+        String::from_utf8(value.to_vec()).unwrap()
     }
 }
 
@@ -270,7 +276,7 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     }
 
     /// Fetches and stores all results from the db
-    pub fn pairs(&self) -> Result<Vec<(IVec, Vec<u8>)>> {
+    pub fn pairs(&self) -> Result<Vec<(E, Vec<u8>)>> {
         self.db
             .iter()
             .map(|x| {
@@ -280,7 +286,7 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
                 } else {
                     value.to_vec()
                 };
-                Ok((key, bytes))
+                Ok((E::from_ivec(key), bytes))
             })
             .collect()
     }

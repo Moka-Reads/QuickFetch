@@ -85,13 +85,6 @@ impl Config {
     }
 }
 
-impl From<IVec> for Package {
-    fn from(value: IVec) -> Self {
-        let bytes = value.as_ref();
-        bincode::deserialize(bytes).unwrap()
-    }
-}
-
 impl Entry for Package {
     fn is_modified(
         &self,
@@ -99,7 +92,7 @@ impl Entry for Package {
     ) -> Option<IVec> {
         for key in keys_iter {
             let key = key.unwrap();
-            let pkg = Package::from(key.clone());
+            let pkg = Package::from_ivec(key.clone());
             if &pkg.name == &self.name && (&self.version != &pkg.version || &self.url != &pkg.url) {
                 return Some(key);
             }
@@ -122,5 +115,9 @@ impl Entry for Package {
 
     fn log_caching(&self) {
         info!("{} v{} caching", &self.name, &self.version)
+    }
+
+    fn from_ivec(value: IVec) -> Self where Self: Sized {
+        bincode::deserialize(value.as_ref()).unwrap()
     }
 }
