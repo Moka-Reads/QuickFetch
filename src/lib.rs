@@ -253,7 +253,7 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
         Ok(())
     }
 
-    /// Fetches and stores all results to cache
+    /// Fetches and stores all results to the db
     pub async fn fetch(&mut self) -> Result<()> {
         let mut tasks = Vec::new();
         let fetcher = Arc::new(RwLock::new(self.clone()));

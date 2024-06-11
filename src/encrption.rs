@@ -9,6 +9,7 @@ pub enum EncryptionMethod {
 }
 
 impl EncryptionMethod {
+    /// Encrypts the data using the provided key and encryption method
     pub fn encrypt(&self, data: &[u8], key: &[u8]) -> anyhow::Result<Vec<u8>> {
         match self {
             EncryptionMethod::AesGcm => {
@@ -38,6 +39,7 @@ impl EncryptionMethod {
         }
     }
 
+    /// Decrypts the data using the provided key and encryption method
     pub fn decrypt(&self, data: &[u8], key: &[u8]) -> anyhow::Result<Vec<u8>> {
         match self {
             EncryptionMethod::AesGcm => {

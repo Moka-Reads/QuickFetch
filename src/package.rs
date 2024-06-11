@@ -8,13 +8,22 @@ use std::path::Path;
 use tokio::fs::read_to_string;
 
 /// A Minimal Package Implementation
+///
+/// This module provides a minimal package implementation
+/// If you are looking to use Github releases as a source for your packages,
+/// you can use the `github_release` method to create a new package.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Package {
     name: String,
     version: String,
     url: String,
+    is_gh: bool, // used to turn off semantic versioning check for github releases
 }
 
+/// A Minimal Config Implementation
+///
+/// The Config struct is used to store a list of packages.
+/// We provide methods of reading from both JSON and TOML files, that also verify correct semantic versioning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     packages: Vec<Package>,
@@ -32,6 +41,7 @@ impl Package {
             name: name.to_string(),
             version: version.to_string(),
             url: url.to_string(),
+            is_gh: false,
         }
     }
 
@@ -45,6 +55,7 @@ impl Package {
                 "https://github.com/{}/{}/releases/download/{}/{}",
                 user, repo, tag, asset
             ),
+            is_gh: true,
         }
     }
 
@@ -63,8 +74,9 @@ impl Config {
             Mode::Toml => toml::from_str::<Config>(&contents)?,
         };
 
+
         for pkg in &data.packages {
-            if !pkg.verify_valid_version() {
+            if !pkg.verify_valid_version() && !pkg.is_gh{
                 return Err(anyhow!("Invalid Semantic Versioning Format"));
             }
         }
@@ -72,14 +84,17 @@ impl Config {
         Ok(data)
     }
 
+    /// Reads a JSON file and returns a Config struct
     pub async fn from_json_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         Self::from_file(path, Mode::Json).await
     }
 
+    /// Reads a TOML file and returns a Config struct
     pub async fn from_toml_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         Self::from_file(path, Mode::Toml).await
     }
 
+    /// Returns a list of packages
     pub fn packages(self) -> Vec<Package> {
         self.packages
     }
