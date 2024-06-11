@@ -1,12 +1,12 @@
+use quickfetch::package::{Config, Package};
+use quickfetch::pretty_env_logger;
+use quickfetch::Fetcher;
 use std::path::PathBuf;
 use tokio::fs::read_to_string;
 use toml::from_str;
-use quickfetch::pretty_env_logger;
-use quickfetch::package::{Config, Package};
-use quickfetch::Fetcher;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()>{
+async fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
     let content = read_to_string("examples/pkgs.toml").await?;
     let packages: Config = from_str(&content).unwrap();

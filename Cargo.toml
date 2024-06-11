@@ -37,6 +37,3 @@ aes-gcm = "0.10.3"
 #salsa20 = "0.10.2"
 #blowfish = "0.9.1"
 #twofish = "0.7.1"
-
-[package.metadata.docs.rs]
-cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]

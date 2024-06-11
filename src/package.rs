@@ -1,11 +1,11 @@
-use std::path::Path;
-use anyhow::anyhow;
 use crate::Entry;
+use anyhow::anyhow;
 use bincode;
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use tokio::fs::read_to_string;
 use sled::IVec;
+use std::path::Path;
+use tokio::fs::read_to_string;
 
 /// A Minimal Package Implementation
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,7 +20,7 @@ pub struct Config {
     packages: Vec<Package>,
 }
 
-enum Mode{
+enum Mode {
     Json,
     Toml,
 }
@@ -32,6 +32,19 @@ impl Package {
             name: name.to_string(),
             version: version.to_string(),
             url: url.to_string(),
+        }
+    }
+
+    pub fn github_release(user: &str, repo: &str, tag: &str, asset: &str) -> Self {
+        Self {
+            // This naming convention is used to avoid conflicts with other packages that may use
+            // the same user/repo and tag, but for a different asset file.
+            name: format!("{}/{}-{}/{}", user, repo, tag, asset),
+            version: tag.to_string(),
+            url: format!(
+                "https://github.com/{}/{}/releases/download/{}/{}",
+                user, repo, tag, asset
+            ),
         }
     }
 
@@ -47,7 +60,7 @@ impl Config {
         let contents = read_to_string(path).await?;
         let data: Vec<Package> = match mode {
             Mode::Json => serde_json::from_str(&contents)?,
-            Mode::Toml => toml::from_str(&contents)?
+            Mode::Toml => toml::from_str(&contents)?,
         };
 
         for pkg in &data {
@@ -67,13 +80,12 @@ impl Config {
         Self::from_file(path, Mode::Toml).await
     }
 
-    pub fn packages(self) -> Vec<Package>{
+    pub fn packages(self) -> Vec<Package> {
         self.packages
     }
 }
 
-
-impl From<IVec> for Package{
+impl From<IVec> for Package {
     fn from(value: IVec) -> Self {
         let bytes = value.as_ref();
         bincode::deserialize(bytes).unwrap()
@@ -81,12 +93,15 @@ impl From<IVec> for Package{
 }
 
 impl Entry for Package {
-    fn is_modified(&self, keys_iter: impl DoubleEndedIterator<Item=Result<IVec, sled::Error>>) -> Option<IVec> {
-        for key in keys_iter{
+    fn is_modified(
+        &self,
+        keys_iter: impl DoubleEndedIterator<Item = Result<IVec, sled::Error>>,
+    ) -> Option<IVec> {
+        for key in keys_iter {
             let key = key.unwrap();
             let pkg = Package::from(key.clone());
             if &pkg.name == &self.name && (&self.version != &pkg.version || &self.url != &pkg.url) {
-                return Some(key)
+                return Some(key);
             }
         }
 
