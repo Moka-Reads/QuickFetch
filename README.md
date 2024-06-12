@@ -19,5 +19,5 @@ packages with a local cache to easily update, get and remove the different respo
   - [X] `BytesStream` for storing the response in a stream of bytes
 - [X] Enable basic support for encryption and decryption of the response data using the `Entry` as the key. 
 - [X] Provide `Config` and `Package` as a minimal package 
-- [X] Provide `GithubPackage` to handle packages that can be downloaded from Github Releases
+- [X] Provide way to handle packages that can be downloaded from Github Releases
   - This is done using the `Package::github_release` method

@@ -9,6 +9,24 @@
 //!
 //! The goal is to be a one-stop shop for handling local package manager development to handle multiple
 //! packages with a local cache to easily update, get and remove the different responses.
+//!
+//! ## Example
+//! ```rust
+//! use quickfetch::{Fetcher, Entry, package::{Package, Config}};
+//! use quickfetch::home_plus;
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!    quickfetch::pretty_env_logger::init();
+//!    let config = Config::from_toml_file("examples/pkgs.toml").await?;
+//!    // store db in $HOME/.quickfetch
+//!    let mut fetcher: Fetcher<Package> = Fetcher::new(&config.packages(), home_plus(".quickfetch"))?;
+//!    fetcher.fetch().await?;
+//!    // write the packages to $HOME/pkgs
+//!    fetcher.write_all(home_plus("pkgs")).await?;
+//!    Ok(())
+//! }
+//! ```
 
 /// Provides different types of encryption methods that can be used
 pub mod encryption;
@@ -119,16 +137,16 @@ pub struct Fetcher<E: Entry> {
 }
 
 impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
-    /// Create a new `Fetcher` instance with list of urls and cache db name
-    pub fn new(entries: &Vec<E>, db_path: &str) -> Result<Self> {
+    /// Create a new `Fetcher` instance with list of urls and db path
+    pub fn new<P: AsRef<Path>>(entries: &Vec<E>, db_path: P) -> Result<Self> {
         let client = Client::builder()
             .brotli(true) // by default enable brotli compression
             .build()?;
 
         Ok(Self {
             entries: entries.to_owned(),
-            db: sled::open(db_path)?,
-            db_path: PathBuf::from(db_path),
+            db: sled::open(&db_path)?,
+            db_path: PathBuf::from(db_path.as_ref() ),
             client,
             response_method: ResponseMethod::default(),
             encryption_method: None,
