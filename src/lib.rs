@@ -11,7 +11,7 @@
 //! packages with a local cache to easily update, get and remove the different responses.
 
 /// Provides different types of encryption methods that can be used
-pub mod encrption;
+pub mod encryption;
 /// Provides different types of packages that can be used
 pub mod package;
 
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use encrption::EncryptionMethod;
+use encryption::EncryptionMethod;
 use futures::future::join_all;
 use futures::StreamExt;
 use reqwest::{Client, Response};
