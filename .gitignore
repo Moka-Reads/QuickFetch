@@ -2,5 +2,5 @@
 mufiz_urls.py
 mufiz/
 pkgs/
-./quickfetch_derive/target/
-./quickfetch_traits/target/
+./quickfetch_derive/target
+./quickfetch_traits/target
