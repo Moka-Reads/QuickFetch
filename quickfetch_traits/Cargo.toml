@@ -1,0 +1,8 @@
+[package]
+name = "quickfetch_traits"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4.21"
+sled = "0.34.7"

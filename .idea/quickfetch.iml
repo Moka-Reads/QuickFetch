@@ -7,6 +7,25 @@
       <excludeFolder url="file://$MODULE_DIR$/mufiz" />
       <excludeFolder url="file://$MODULE_DIR$/pkgs" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
+      <excludeFolder url="file://$MODULE_DIR$/examples/mufiz" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_derive/target/debug/.fingerprint/proc-macro2-3c1478f488c95ebf" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_derive/target/debug/.fingerprint/proc-macro2-4828e7b1a75c4951" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_derive/target/debug/.fingerprint/proc-macro2-55b02ea9c2928d93" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_derive/target/debug/.fingerprint/proc-macro2-a70c3e75f48475b7" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_derive/target/debug/.fingerprint/quickfetch_derive-456c292a15c065f3" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_derive/target/debug/.fingerprint/quickfetch_derive-9da56957f94299b4" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_derive/target/debug/.fingerprint/quickfetch_derive-9f1170ff1d2f82e3" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_derive/target/debug/.fingerprint/quote-12f3988dd0d8aa39" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_derive/target/debug/.fingerprint/quote-cd43ad3818af265c" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_derive/target/debug/.fingerprint/syn-2d0fa437c81523d8" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_derive/target/debug/.fingerprint/syn-699faf080a8cf9f1" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_derive/target/debug/.fingerprint/unicode-ident-73b0f14cde4bbc81" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_derive/target/debug/build/proc-macro2-3c1478f488c95ebf" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_derive/target/debug/examples" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_traits/target/debug/build/crossbeam-utils-79d5c0c5a2a01b9a/out" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_traits/target/debug/build/libc-d2266380c4883013/out" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_traits/target/debug/build/parking_lot_core-03f7fde75b4134e6/out" />
+      <excludeFolder url="file://$MODULE_DIR$/quickfetch_traits/target/debug/examples" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />

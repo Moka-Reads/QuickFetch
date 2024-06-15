@@ -12,15 +12,16 @@
 //!
 //! ## Example
 //! ```rust
-//! use quickfetch::{Fetcher, Entry, package::{Package, Config}};
+//! use quickfetch::{Fetcher,package::{Package, Config}};
+//! use quickfetch_traits::Entry;
 //! use quickfetch::home_plus;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!    quickfetch::pretty_env_logger::init();
-//!    let config = Config::from_toml_file("examples/pkgs.toml").await?;
+//!    let config: Config<Package> = Config::from_toml_file("examples/pkgs.toml").await?;
 //!    // store db in $HOME/.quickfetch
-//!    let mut fetcher: Fetcher<Package> = Fetcher::new(&config.packages(), home_plus(".quickfetch"))?;
+//!    let mut fetcher: Fetcher<Package> = Fetcher::new(config.packages(), home_plus(".quickfetch"))?;
 //!    fetcher.fetch().await?;
 //!    // write the packages to $HOME/pkgs
 //!    fetcher.write_all(home_plus("pkgs")).await?;
@@ -28,78 +29,33 @@
 //! }
 //! ```
 
+#[macro_use]
+extern crate log;
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use anyhow::Result;
+use futures::future::join_all;
+use futures::StreamExt;
+pub use pretty_env_logger;
+use quickfetch_traits::Entry;
+use reqwest::{Client, Response};
+use sled::{Batch, Db};
+use tokio::fs::create_dir;
+use tokio::sync::RwLock;
+use url::Url;
+
+use encryption::EncryptionMethod;
+
 /// Provides different types of encryption methods that can be used
 pub mod encryption;
 /// Provides different types of packages that can be used
 pub mod package;
 
-#[macro_use]
-extern crate log;
-pub use pretty_env_logger;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
-use anyhow::Result;
-use encryption::EncryptionMethod;
-use futures::future::join_all;
-use futures::StreamExt;
-use reqwest::{Client, Response};
-use sled::{Batch, Db, IVec};
-use tokio::fs::create_dir;
-use tokio::sync::RwLock;
-use url::Url;
-
 /// Returns the path to the home directory with the sub directory appended
 pub fn home_plus<P: AsRef<Path>>(sub_dir: P) -> PathBuf {
     dirs::home_dir().unwrap().join(sub_dir)
-}
-
-/// Entry trait that will be used to be able to fetch and cache data as the Key
-pub trait Entry {
-    /// Check if the entry is modified inside of the db's key iterator and return the old key
-    fn is_modified(
-        &self,
-        keys_iter: impl DoubleEndedIterator<Item = Result<IVec, sled::Error>>,
-    ) -> Option<IVec>;
-    /// Return the url of the entry to send the `GET` request to
-    fn url(&self) -> String;
-    /// Return the entry serialized as bytes to be used as the key in the db
-    fn entry_bytes(&self) -> Vec<u8>;
-    /// Log that the entry is cached
-    fn log_cache(&self);
-    /// Log that the entry is being cached
-    fn log_caching(&self);
-
-    fn from_ivec(value: IVec) -> Self where Self:Sized;
-}
-
-impl Entry for String {
-    fn is_modified(
-        &self,
-        _keys_iter: impl DoubleEndedIterator<Item = Result<IVec, sled::Error>>,
-    ) -> Option<IVec> {
-        None
-    }
-
-    fn url(&self) -> String {
-        self.to_string()
-    }
-
-    fn entry_bytes(&self) -> Vec<u8> {
-        self.as_bytes().to_vec()
-    }
-
-    fn log_cache(&self) {
-        info!("{} (cached)", self.url())
-    }
-
-    fn log_caching(&self) {
-        info!("{} caching", self.url())
-    }
-
-    fn from_ivec(value: IVec) -> Self where Self: Sized {
-        String::from_utf8(value.to_vec()).unwrap()
-    }
 }
 
 /// `ResponseMethod` enum to specify the method of fetching the response
@@ -138,15 +94,15 @@ pub struct Fetcher<E: Entry> {
 
 impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     /// Create a new `Fetcher` instance with list of urls and db path
-    pub fn new<P: AsRef<Path>>(entries: &Vec<E>, db_path: P) -> Result<Self> {
+    pub fn new<P: AsRef<Path>>(entries: &[E], db_path: P) -> Result<Self> {
         let client = Client::builder()
             .brotli(true) // by default enable brotli compression
             .build()?;
 
         Ok(Self {
-            entries: entries.to_owned(),
+            entries: entries.to_vec(),
             db: sled::open(&db_path)?,
-            db_path: PathBuf::from(db_path.as_ref() ),
+            db_path: PathBuf::from(db_path.as_ref()),
             client,
             response_method: ResponseMethod::default(),
             encryption_method: None,

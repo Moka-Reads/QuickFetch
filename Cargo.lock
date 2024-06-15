@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "quickfetch"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1068,15 +1068,35 @@ dependencies = [
  "futures",
  "log",
  "pretty_env_logger",
+ "quickfetch_derive",
+ "quickfetch_traits",
  "rand",
  "reqwest",
  "semver",
  "serde",
  "serde_json",
  "sled",
+ "syn",
  "tokio",
  "toml",
  "url",
+]
+
+[[package]]
+name = "quickfetch_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "quickfetch_traits"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "sled",
 ]
 
 [[package]]

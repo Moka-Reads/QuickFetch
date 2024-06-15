@@ -34,7 +34,6 @@ impl EncryptionMethod {
                 encrypted_data.extend_from_slice(&ciphertext);
 
                 Ok(encrypted_data)
-
             }
         }
     }
@@ -46,7 +45,7 @@ impl EncryptionMethod {
                 let cipher = Aes256Gcm::new_from_slice(key).unwrap();
 
                 // Split the nonce and ciphertext
-                let (nonce, ciphertext) = data.split_at(data.len()/2);
+                let (nonce, ciphertext) = data.split_at(data.len() / 2);
 
                 let plaintext = cipher
                     .decrypt(&Nonce::from_slice(nonce), ciphertext)
@@ -59,7 +58,7 @@ impl EncryptionMethod {
                 let cipher = chacha::ChaCha20Poly1305::new_from_slice(key).unwrap();
 
                 // Split the nonce and ciphertext
-                let (nonce, ciphertext) = data.split_at(data.len()/2);
+                let (nonce, ciphertext) = data.split_at(data.len() / 2);
 
                 let plaintext = cipher
                     .decrypt(&Nonce::from_slice(nonce), ciphertext)
