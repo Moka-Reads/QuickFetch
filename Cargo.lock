@@ -1076,7 +1076,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sled",
- "syn",
  "tokio",
  "toml",
  "url",

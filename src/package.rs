@@ -24,20 +24,28 @@ pub struct Package {
     url: String,
 }
 
-/// A Github Release Implementation
-#[derive(QFEntry, Debug, Clone, Serialize, Deserialize)]
-pub struct GithubRelease{
-    #[mod_eq]
-    #[name]
-    /// `user/repo` of the Github repository
-    user_repo: String,
-    #[mod_neq]
-    #[version]
-    /// The tag of the release
+/// A Github Release Implementation that can be used with a config file
+/// and then converts to `Package` struct.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GithubReleaseBuilder {
+    user: String,
+    repo: String,
+    asset: String,
     tag: String,
-    #[mod_neq]
-    #[url]
-    gh_url: String,
+}
+
+impl From<GithubReleaseBuilder> for Package{
+    fn from(value: GithubReleaseBuilder) -> Self {
+        let url = format!("https://github.com/{}/{}/releases/download/{}/{}", &value.user, &value.repo, &value.tag, &value.asset);
+        let name = format!("{}/{} - {}", &value.user, &value.repo, &value.asset);
+        Package::new(&name, &value.tag, &url)
+    }
+}
+
+pub fn github_to_packages(v: Vec<GithubReleaseBuilder>) -> Vec<Package>{
+    v.into_iter()
+        .map(|x| Package::from(x))
+        .collect()
 }
 
 /// A Minimal Config Implementation
@@ -45,11 +53,9 @@ pub struct GithubRelease{
 /// The Config struct is used to store a list of Packages (generically PK).
 /// We provide methods of reading from both JSON and TOML files, that also verify correct semantic versioning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Config<PK>
-{
+pub struct Config<PK> {
     packages: Vec<PK>,
 }
-
 
 enum Mode {
     Json,
@@ -75,21 +81,17 @@ impl Package {
 impl<PK> Config<PK> {
     /// Reads a configuration file (JSON or TOML) and returns a Config struct.
     async fn from_file<P>(path: P, mode: Mode) -> anyhow::Result<Self>
-        where
-            P: AsRef<Path> + Send + Sync,
-            PK: for<'de> Deserialize<'de>,
+    where
+        P: AsRef<Path> + Send + Sync,
+        PK: for<'de> Deserialize<'de>,
     {
         // Read file contents
-        let contents = read_to_string(path.as_ref())
-            .await
-            ?;
+        let contents = read_to_string(path.as_ref()).await?;
 
         // Deserialize based on mode
         let data = match mode {
-            Mode::Json => serde_json::from_str::<Config<PK>>(&contents)
-                ?,
-            Mode::Toml => toml::from_str::<Config<PK>>(&contents)
-                ?,
+            Mode::Json => serde_json::from_str::<Config<PK>>(&contents)?,
+            Mode::Toml => toml::from_str::<Config<PK>>(&contents)?,
         };
 
         Ok(data)
@@ -97,18 +99,18 @@ impl<PK> Config<PK> {
 
     /// Reads a JSON file and returns a Config struct.
     pub async fn from_json_file<P>(path: P) -> anyhow::Result<Self>
-        where
-            P: AsRef<Path> + Send + Sync,
-            PK: for<'de> Deserialize<'de>,
+    where
+        P: AsRef<Path> + Send + Sync,
+        PK: for<'de> Deserialize<'de>,
     {
         Self::from_file(path, Mode::Json).await
     }
 
     /// Reads a TOML file and returns a Config struct.
     pub async fn from_toml_file<P>(path: P) -> anyhow::Result<Self>
-        where
-            P: AsRef<Path> + Send + Sync,
-            PK: for<'de> Deserialize<'de>,
+    where
+        P: AsRef<Path> + Send + Sync,
+        PK: for<'de> Deserialize<'de>,
     {
         Self::from_file(path, Mode::Toml).await
     }
@@ -118,43 +120,3 @@ impl<PK> Config<PK> {
         &self.packages
     }
 }
-
-// impl Entry for Package {
-//     fn is_modified(
-//         &self,
-//         keys_iter: impl DoubleEndedIterator<Item = Result<IVec, sled::Error>>,
-//     ) -> Option<IVec> {
-//         for key in keys_iter {
-//             let key = key.unwrap();
-//             let pkg = Package::from_ivec(key.clone());
-//             if &pkg.name == &self.name && (&self.version != &pkg.version || &self.url != &pkg.url) {
-//                 return Some(key);
-//             }
-//         }
-//
-//         None
-//     }
-//
-//     fn url(&self) -> String {
-//         self.url.to_string()
-//     }
-//
-//     fn entry_bytes(&self) -> Vec<u8> {
-//         bincode::serialize(&self).unwrap()
-//     }
-//
-//     fn log_cache(&self) {
-//         info!("{} v{} (cached)", &self.name, &self.version)
-//     }
-//
-//     fn log_caching(&self) {
-//         info!("{} v{} caching", &self.name, &self.version)
-//     }
-//
-//     fn from_ivec(value: IVec) -> Self
-//     where
-//         Self: Sized,
-//     {
-//         bincode::deserialize(value.as_ref()).unwrap()
-//     }
-// }

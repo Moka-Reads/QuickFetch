@@ -1,7 +1,13 @@
 [package]
 name = "quickfetch_traits"
+description = "Traits for quickfetch"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+authors = ["Mustafif Khan", "Moka-Reads"]
+documentation = "https://docs.rs/quickfetch/latest"
+homepage = "https://mokareads.org"
+repository = "https://github.com/Moka-Reads/QuickFetch"
 
 [dependencies]
 log = "0.4.21"

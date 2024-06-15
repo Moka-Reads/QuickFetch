@@ -1,10 +1,10 @@
 [package]
 name = "quickfetch"
-description = "A library built to fetch multiple requests quickly!"
+description = "A library built to create package managers quickly!"
 version = "0.2.0"
 edition = "2021"
 license = "MIT"
-authors = ["Mustafif Khan", "MoKa Reads Foundation"]
+authors = ["Mustafif Khan", "Moka-Reads"]
 documentation = "https://docs.rs/quickfetch/latest"
 homepage = "https://mokareads.org"
 repository = "https://github.com/Moka-Reads/QuickFetch"
@@ -16,6 +16,10 @@ path = "examples/mufiz.rs"
 [[example]]
 name = "mufiz_pkg"
 path = "examples/mufiz_pkg.rs"
+
+[[example]]
+name = "timer"
+path = "examples/timer.rs"
 
 [dependencies]
 anyhow = "1.0.86"
@@ -36,9 +40,14 @@ bytes = "1.6.0"
 rand = "0.8.5"
 chacha20poly1305 = "0.10.1"
 aes-gcm = "0.10.3"
-quickfetch_derive = { path = "quickfetch_derive" }
-quickfetch_traits = {path = "quickfetch_traits"}
-syn = { version = "2.0.66", features = ["derive", "full"] }
+quickfetch_derive = { path = "quickfetch_derive", version ="0.1"}
+quickfetch_traits = {path = "quickfetch_traits", version = "0.1"}
 #salsa20 = "0.10.2"
 #blowfish = "0.9.1"
 #twofish = "0.7.1"
+
+[profile.release]
+strip = true  # Automatically strip symbols from the binary.
+lto = true # Enables link time optimizations to optimize at link-stage
+codegen-units = 1 # allows for maximum size reduction optimizations
+panic = "abort" # reduces size of panic unwind backtrace
