@@ -2,7 +2,7 @@ use aes_gcm::{aead::Aead, AeadCore, Aes256Gcm, KeyInit, Nonce};
 use chacha20poly1305 as chacha;
 use rand::rngs::OsRng;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum EncryptionMethod {
     AesGcm,
     Chacha20Poly1305,
@@ -48,7 +48,7 @@ impl EncryptionMethod {
                 let (nonce, ciphertext) = data.split_at(data.len() / 2);
 
                 let plaintext = cipher
-                    .decrypt(&Nonce::from_slice(nonce), ciphertext)
+                    .decrypt(Nonce::from_slice(nonce), ciphertext)
                     .unwrap();
 
                 Ok(plaintext)
@@ -61,7 +61,7 @@ impl EncryptionMethod {
                 let (nonce, ciphertext) = data.split_at(data.len() / 2);
 
                 let plaintext = cipher
-                    .decrypt(&Nonce::from_slice(nonce), ciphertext)
+                    .decrypt(Nonce::from_slice(nonce), ciphertext)
                     .unwrap();
 
                 Ok(plaintext)

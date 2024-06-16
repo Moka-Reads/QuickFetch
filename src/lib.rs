@@ -36,22 +36,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
+pub use bincode;
 use bytes::Bytes;
 use futures::future::join_all;
 use futures::StreamExt;
-
+pub use pretty_env_logger;
+pub use quickfetch_derive as macros;
+pub use quickfetch_traits as traits;
 use quickfetch_traits::Entry;
 use reqwest::{Client, Response};
 use sled::{Batch, Db, IVec};
 use tokio::fs::create_dir;
 use tokio::sync::mpsc::channel;
-use tokio::sync::RwLock;
 use url::Url;
-
-pub use pretty_env_logger;
-pub use bincode;
-pub use quickfetch_derive as macros;
-pub use quickfetch_traits as traits;
 
 use encryption::EncryptionMethod;
 
@@ -107,7 +104,7 @@ impl Default for ResponseMethod {
 /// - `response_method`: Method of fetching the response
 #[derive(Debug, Clone)]
 pub struct Fetcher<E: Entry> {
-    pub entries: Vec<E>,
+    entries: Arc<Vec<E>>,
     db: Db,
     db_path: PathBuf,
     client: Client,
@@ -122,6 +119,7 @@ pub enum SelectOp {
     Get,
 }
 
+// Constructor and Setup Methods
 impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     /// Create a new `Fetcher` instance with list of urls and db path
     pub fn new<P: AsRef<Path>>(entries: &[E], db_path: P) -> Result<Self> {
@@ -130,7 +128,7 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
             .build()?;
 
         Ok(Self {
-            entries: entries.to_vec(),
+            entries: Arc::new(entries.to_vec()),
             db: sled::open(&db_path)?,
             db_path: PathBuf::from(db_path.as_ref()),
             client,
@@ -139,6 +137,28 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
         })
     }
 
+    /// Set the client to be used for fetching the data
+    ///
+    /// This is useful when you want to use a custom client with custom settings
+    /// when using `Client::builder()`
+    pub fn set_client(&mut self, client: Client) {
+        self.client = client;
+    }
+
+    /// Set the encryption method to be used for encrypting and decrypting the response data
+    /// By default `self.encryption_method = None`
+    pub fn set_encryption_method(&mut self, encryption_method: EncryptionMethod) {
+        self.encryption_method = Some(encryption_method)
+    }
+
+    /// Set the response method to be used for fetching the response
+    pub fn set_response_method(&mut self, response_method: ResponseMethod) {
+        self.response_method = response_method
+    }
+}
+
+// Database Operations
+impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     /// Removes the `db` directory (use with caution as this uses `tokio::fs::remove_dir_all`)
     pub async fn remove_db_dir(&self) -> Result<()> {
         tokio::fs::remove_dir_all(&self.db_path).await?;
@@ -164,7 +184,7 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     /// Export the db to a vector of key value pairs and an iterator of values
     ///
     /// > Useful when needing to migrate the db from an older version to a newer version
-    pub fn export(&self) -> Vec<(Vec<u8>, Vec<u8>, impl Iterator<Item = Vec<Vec<u8>>> + Sized)> {
+    pub fn export(&self) -> Vec<(Vec<u8>, Vec<u8>, impl Iterator<Item=Vec<Vec<u8>>> + Sized)> {
         self.db.export()
     }
 
@@ -173,30 +193,15 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     /// > Useful when needing to migrate the db from an older version to a newer version
     pub fn import(
         &self,
-        export: Vec<(Vec<u8>, Vec<u8>, impl Iterator<Item = Vec<Vec<u8>>> + Sized)>,
+        export: Vec<(Vec<u8>, Vec<u8>, impl Iterator<Item=Vec<Vec<u8>>> + Sized)>,
     ) {
         self.db.import(export)
     }
+}
 
-    /// Set the client to be used for fetching the data
-    ///
-    /// This is useful when you want to use a custom client with custom settings
-    /// when using `Client::builder()`
-    pub fn set_client(&mut self, client: Client) {
-        self.client = client;
-    }
-
-    /// Set the encryption method to be used for encrypting and decrypting the response data
-    pub fn set_encryption_method(&mut self, encryption_method: EncryptionMethod) {
-        self.encryption_method = Some(encryption_method)
-    }
-
-    /// Set the response method to be used for fetching the response
-    pub fn set_response_method(&mut self, response_method: ResponseMethod) {
-        self.response_method = response_method
-    }
-
-    async fn resp_bytes(&self, response: Response) -> Result<bytes::Bytes> {
+// Handles and Fetching Entries
+impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
+    async fn resp_bytes(&self, response: Response) -> Result<Bytes> {
         match &self.response_method {
             ResponseMethod::Bytes => {
                 let bytes = response.bytes().await?;
@@ -221,54 +226,6 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
                 Ok(bytes.freeze())
             }
         }
-    }
-
-    /// Fetches and stores all results to the db
-    pub async fn concurrent_fetch(&mut self) -> Result<()> {
-        let mut tasks = Vec::new();
-        let fetcher = Arc::new(RwLock::new(self.clone()));
-
-        for entry in self.entries.clone() {
-            let fetcher = fetcher.clone();
-            tasks.push(tokio::spawn(async move {
-                let mut fetcher = fetcher.write().await;
-                fetcher.handle_entry_conc(entry).await
-            }));
-        }
-
-        let j = join_all(tasks)
-            .await
-            .into_iter()
-            .map(|x| Ok(x??))
-            .collect::<Result<()>>()?;
-
-        Ok(j)
-    }
-
-    async fn handle_entry_channel(&mut self, entry: E, bytes: Bytes) -> Result<()> {
-        if self.db.get(&entry.entry_bytes())?.is_some() {
-            entry.log_cache()
-        } else if let Some(old_key) = entry.is_modified(self.db.iter().keys()) {
-            self.handle_modified_entry(entry, bytes, old_key).await?;
-        } else {
-            self.handle_new_entry(entry, bytes).await?;
-        }
-        Ok(())
-    }
-
-    async fn handle_entry_conc(&mut self, entry: E) -> Result<()> {
-        if self.db.get(&entry.entry_bytes())?.is_some() {
-            entry.log_cache();
-        } else if let Some(old_key) = entry.is_modified(self.db.iter().keys()) {
-            let response = self.client.get(&entry.url()).send().await?;
-            let bytes = self.resp_bytes(response).await?;
-            self.handle_modified_entry(entry, bytes, old_key).await?;
-        } else {
-            let response = self.client.get(&entry.url()).send().await?;
-            let bytes = self.resp_bytes(response).await?;
-            self.handle_new_entry(entry, bytes).await?;
-        }
-        Ok(())
     }
 
     async fn handle_modified_entry(&mut self, entry: E, bytes: Bytes, old_key: IVec) -> Result<()> {
@@ -301,19 +258,45 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
         }
     }
 
+    async fn handle_entry_channel(&mut self, entry: E, bytes: Bytes) -> Result<()> {
+        if self.db.get(entry.entry_bytes())?.is_some() {
+            entry.log_cache()
+        } else if let Some(old_key) = entry.is_modified(self.db.iter().keys()) {
+            self.handle_modified_entry(entry, bytes, old_key).await?;
+        } else {
+            self.handle_new_entry(entry, bytes).await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_entry_conc(&mut self, entry: E) -> Result<()> {
+        if self.db.get(entry.entry_bytes())?.is_some() {
+            entry.log_cache();
+        } else if let Some(old_key) = entry.is_modified(self.db.iter().keys()) {
+            let response = self.client.get(&entry.url()).send().await?;
+            let bytes = self.resp_bytes(response).await?;
+            self.handle_modified_entry(entry, bytes, old_key).await?;
+        } else {
+            let response = self.client.get(&entry.url()).send().await?;
+            let bytes = self.resp_bytes(response).await?;
+            self.handle_new_entry(entry, bytes).await?;
+        }
+        Ok(())
+    }
+
     /// Fetches and stores all results to the db using a bounded multi-producer single-consumer channel
     /// Benefits of multiple entries since we use `recv_many` to receive all the entries at once
     pub async fn channel_fetch(&mut self) -> Result<()> {
         let (tx, mut rx) = channel(self.entries.len());
-
         let self_clone = self.clone();
         let handle = tokio::spawn(async move {
-            for entry in self_clone.entries.clone() {
+            let entries = self_clone.entries.clone();
+            for entry in &*entries {
                 let tx = tx.clone();
 
-                let response = self_clone.client.get(&entry.url()).send().await.unwrap();
+                let response = self_clone.client.get(entry.url()).send().await.unwrap();
                 let bytes = self_clone.resp_bytes(response).await.unwrap();
-                tx.send((entry, bytes)).await.unwrap();
+                tx.send((entry.clone(), bytes)).await.unwrap();
             }
         });
 
@@ -325,6 +308,24 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
         for (entry, bytes) in entries.drain(..) {
             self.handle_entry_channel(entry, bytes).await?;
         }
+
+        Ok(())
+    }
+
+    /// Fetches and stores all results to the db
+    pub async fn concurrent_fetch(&mut self) -> Result<()> {
+        let mut tasks = Vec::new();
+        for entry in (*self.entries).clone() {
+            let mut fetcher = self.clone();
+            tasks.push(tokio::spawn(async move {
+                fetcher.handle_entry_conc(entry.clone()).await
+            }));
+        }
+
+        join_all(tasks)
+            .await
+            .into_iter()
+            .try_for_each(|x| x?)?;
 
         Ok(())
     }
@@ -356,7 +357,7 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
             .map(|x| {
                 let (key, value) = x.unwrap();
                 let bytes = Self::dec_or_clone(
-                    self.encryption_method.clone(),
+                    self.encryption_method,
                     value.as_ref(),
                     key.as_ref(),
                 )?;
@@ -394,7 +395,7 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
 
             SelectOp::Delete => {
                 let key = key.entry_bytes();
-                let _ = self.db.remove(&key)?;
+                let _ = self.db.remove(key)?;
                 Ok(None)
             }
             SelectOp::Get => {
@@ -402,7 +403,7 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
                 let resp = self.db.get(&key)?;
                 if let Some(ivec) = resp {
                     let bytes = Self::dec_or_clone(
-                        self.encryption_method.clone(),
+                        self.encryption_method,
                         ivec.as_ref(),
                         key.as_ref(),
                     )?;
@@ -417,8 +418,8 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     /// Writes all the fetched data to the specified directory
     pub async fn write_all(&self, dir: PathBuf) -> Result<()> {
         let mut tasks = Vec::new();
-
-        for entry in self.entries.clone() {
+        let entries = self.entries.clone();
+        for entry in &*entries {
             let key = entry.url();
             let resp = self.db.get(&key)?;
             let file_name = Url::parse(&key)?
@@ -433,18 +434,15 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
             }
             if let Some(ivec) = resp {
                 let bytes = Self::dec_or_clone(
-                    self.encryption_method.clone(),
+                    self.encryption_method,
                     ivec.as_ref(),
                     key.as_bytes(),
                 )?;
-                tasks.push(tokio::spawn(async move { tokio::fs::write(path, bytes) }))
+                tasks.push(tokio::spawn(async move { tokio::fs::write(path, bytes).await }))
             }
         }
 
-        let res = join_all(tasks).await;
-        for r in res {
-            r?.await?;
-        }
+        join_all(tasks).await.into_iter().try_for_each(|x| x?)?;
         Ok(())
     }
 }

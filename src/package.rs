@@ -34,18 +34,19 @@ pub struct GithubReleaseBuilder {
     tag: String,
 }
 
-impl From<GithubReleaseBuilder> for Package{
+impl From<GithubReleaseBuilder> for Package {
     fn from(value: GithubReleaseBuilder) -> Self {
-        let url = format!("https://github.com/{}/{}/releases/download/{}/{}", &value.user, &value.repo, &value.tag, &value.asset);
+        let url = format!(
+            "https://github.com/{}/{}/releases/download/{}/{}",
+            &value.user, &value.repo, &value.tag, &value.asset
+        );
         let name = format!("{}/{} - {}", &value.user, &value.repo, &value.asset);
         Package::new(&name, &value.tag, &url)
     }
 }
 
-pub fn github_to_packages(v: Vec<GithubReleaseBuilder>) -> Vec<Package>{
-    v.into_iter()
-        .map(|x| Package::from(x))
-        .collect()
+pub fn github_to_packages(v: Vec<GithubReleaseBuilder>) -> Vec<Package> {
+    v.into_iter().map(Package::from).collect()
 }
 
 /// A Minimal Config Implementation
