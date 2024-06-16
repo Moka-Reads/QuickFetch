@@ -4,3 +4,4 @@ mufiz/
 pkgs/
 ./quickfetch_derive/target
 ./quickfetch_traits/target
+timer_*
