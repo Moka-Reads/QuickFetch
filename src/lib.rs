@@ -29,31 +29,31 @@
 //! }
 //! ```
 
-#[macro_use]
-extern crate log;
-
+use sled::IVec;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
 pub use bincode;
 use bytes::Bytes;
+use encryption::EncryptionMethod;
 use futures::future::join_all;
 use futures::StreamExt;
+use kanal::bounded_async as channel;
 pub use pretty_env_logger;
-pub use quickfetch_derive as macros;
 pub use quickfetch_traits as traits;
-use quickfetch_traits::Entry;
+use quickfetch_traits::{Entry, EntryKey, EntryValue};
 use reqwest::{Client, Response};
-use sled::{Batch, Db, IVec};
+use sled::Db;
 use tokio::fs::create_dir;
-use tokio::sync::mpsc::channel;
+use tokio::sync::Semaphore;
 use url::Url;
-
-use encryption::EncryptionMethod;
 
 /// Provides different types of encryption methods that can be used
 pub mod encryption;
+/// Provides structures that can be used as a Key and Value for Fetcher
+pub mod key_val;
 /// Provides different types of packages that can be used
 pub mod package;
 
@@ -102,6 +102,7 @@ impl Default for ResponseMethod {
 /// - `db`: sled db to cache the fetched data
 /// - `client`: reqwest client to fetch the data
 /// - `response_method`: Method of fetching the response
+/// - `encryption_method`: Method of encrypting and decrypting the response
 #[derive(Debug, Clone)]
 pub struct Fetcher<E: Entry> {
     entries: Arc<Vec<E>>,
@@ -228,87 +229,136 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
         }
     }
 
-    async fn handle_modified_entry(&mut self, entry: E, bytes: Bytes, old_key: IVec) -> Result<()> {
-        let mut batch = Batch::default();
-        batch.remove(old_key);
-        entry.log_caching();
+    // async fn handle_modified_entry(&mut self, entry: E, bytes: Bytes, old_key: IVec) -> Result<()> {
+    //     let mut batch = Batch::default();
+    //     batch.remove(old_key);
+    //     entry.log_caching();
 
-        // Encrypt the bytes before inserting into the db
-        let bytes = self.encrypt_bytes(bytes, &entry.entry_bytes())?;
-        batch.insert(entry.entry_bytes(), bytes.as_ref());
-        self.db.apply_batch(batch)?;
-        Ok(())
-    }
+    //     // Encrypt the bytes before inserting into the db
+    //     let bytes = self.encrypt_bytes(bytes, &entry.entry_bytes())?;
+    //     batch.insert(entry.entry_bytes(), bytes.as_ref());
+    //     self.db.apply_batch(batch)?;
+    //     Ok(())
+    // }
 
-    async fn handle_new_entry(&mut self, entry: E, bytes: Bytes) -> Result<()> {
-        entry.log_caching();
+    // async fn handle_new_entry(&mut self, entry: E, bytes: Bytes) -> Result<()> {
+    //     entry.log_caching();
 
-        // Encrypt the bytes before inserting into the db
-        let bytes = self.encrypt_bytes(bytes, &entry.entry_bytes())?;
-        let _ = self.db.insert(entry.entry_bytes(), bytes.as_ref())?;
-        Ok(())
-    }
+    //     // Encrypt the bytes before inserting into the db
+    //     let bytes = self.encrypt_bytes(bytes, &entry.entry_bytes())?;
+    //     let _ = self.db.insert(entry.entry_bytes(), bytes.as_ref())?;
+    //     Ok(())
+    // }
 
-    fn encrypt_bytes(&self, bytes: Bytes, key: &[u8]) -> Result<Bytes> {
+    fn encrypt_bytes(&self, bytes: &[u8], key: &[u8]) -> Result<Vec<u8>> {
         if let Some(encryption_method) = &self.encryption_method {
             let bytes = encryption_method.encrypt(bytes.as_ref(), key)?;
-            Ok(Bytes::from(bytes))
-        } else {
             Ok(bytes)
+        } else {
+            Ok(bytes.to_vec())
         }
     }
 
-    async fn handle_entry_channel(&mut self, entry: E, bytes: Option<Bytes>) -> Result<()> {
-        if self.db.get(entry.entry_bytes())?.is_some() {
-            entry.log_cache()
-        } else if let Some(old_key) = entry.is_modified(self.db.iter().keys()) {
-            self.handle_modified_entry(entry, bytes.unwrap(), old_key)
-                .await?;
-        } else {
-            self.handle_new_entry(entry, bytes.unwrap()).await?;
+    async fn handle_entry_channel(&self, entry: E, bytes: Option<Bytes>) -> Result<()> {
+        let key = entry.key();
+        let mut value = entry.value();
+
+        let key_bytes = key.bytes();
+
+        // key doesn't exist in the db
+        if let Some(bytes) = bytes {
+            key.log_caching();
+            let bytes = self.encrypt_bytes(bytes.as_ref(), key_bytes.as_ref())?;
+            value.set_response(bytes.as_ref());
+            let _ = self.db.insert(key.bytes(), value.bytes())?;
+        } else if let Some(curr_val) = self.db.get(&key_bytes)? {
+            let cv_bytes = curr_val.to_vec();
+            let cv = E::Value::from_ivec(curr_val);
+            if !value.is_same(&cv) {
+                key.log_caching();
+                let response = self.client.get(&value.url()).send().await?;
+                let bytes = self.resp_bytes(response).await?;
+                value.set_response(&self.encrypt_bytes(bytes.as_ref(), &key.bytes()).unwrap());
+                let _ =
+                    self.db
+                        .compare_and_swap(key.bytes(), Some(cv_bytes), Some(value.bytes()))?;
+            } else {
+                key.log_cache();
+            }
         }
+
         Ok(())
     }
 
     /// Fetches and stores all results to the db using a bounded multi-producer single-consumer channel
     /// Benefits of multiple entries since we use `recv_many` to receive all the entries at once
-    pub async fn channel_fetch(&mut self) -> Result<()> {
-        let (tx, mut rx) = channel(self.entries.len());
+    pub async fn channel_fetch(&self) -> Result<()> {
+        let len = self.entries.len();
+        let (tx, rx) = channel(len);
         let self_clone = self.clone();
-        let handle = tokio::spawn(async move {
-            let entries = self_clone.entries.clone();
-            for entry in (*entries).clone() {
+        let semaphore = Arc::new(Semaphore::new(len)); // Adjust the concurrency limit as needed
+
+        // Use a stream to process entries concurrently
+        let entries = self_clone.entries.clone();
+        let entries_stream = futures::stream::iter(<Vec<E> as Clone>::clone(&entries).into_iter())
+            .for_each_concurrent(None, move |entry| {
                 let tx = tx.clone();
+                let self_clone = self_clone.clone();
+                let semaphore = semaphore.clone();
 
-                let response = self_clone.client.get(entry.url()).send().await.unwrap();
-                let bytes = self_clone.resp_bytes(response).await.unwrap();
-                tx.send((entry.clone(), Some(bytes))).await.unwrap();
-            }
-        });
+                async move {
+                    let _permit = semaphore.acquire().await.unwrap(); // Acquire a semaphore permit
 
-        // Await the completion of the spawned task
-        handle.await?;
+                    let mut bytes: Option<Bytes> = None;
+                    if !self_clone.db.contains_key(entry.key().bytes()).unwrap() {
+                        let response = self_clone
+                            .client
+                            .get(entry.value().url())
+                            .send()
+                            .await
+                            .unwrap();
+                        bytes = Some(self_clone.resp_bytes(response).await.unwrap());
+                    }
+                    tx.send((entry.clone(), bytes)).await.unwrap();
+                }
+            });
 
-        let mut entries = Vec::new();
-        _ = rx.recv_many(&mut entries, self.entries.len()).await;
-        for (entry, bytes) in entries.drain(..) {
-            self.handle_entry_channel(entry, bytes).await?;
-        }
+        // Await the completion of the stream
+        tokio::spawn(entries_stream).await?;
+
+        rx.stream()
+            .for_each(|(entry, bytes)| async {
+                self.handle_entry_channel(entry, bytes).await.unwrap();
+            })
+            .await;
 
         Ok(())
     }
 
-    async fn handle_entry_conc(&mut self, entry: E) -> Result<()> {
-        if self.db.get(entry.entry_bytes())?.is_some() {
-            entry.log_cache();
-        } else if let Some(old_key) = entry.is_modified(self.db.iter().keys()) {
-            let response = self.client.get(&entry.url()).send().await?;
-            let bytes = self.resp_bytes(response).await?;
-            self.handle_modified_entry(entry, bytes, old_key).await?;
+    async fn handle_entry_conc(&self, entry: E) -> Result<()> {
+        let key = entry.key();
+        let mut value = entry.value();
+
+        if let Some(curr_val) = self.db.get(key.bytes())? {
+            let cv_bytes = curr_val.to_vec();
+            let cv = E::Value::from_ivec(curr_val);
+            if !value.is_same(&cv) {
+                key.log_caching();
+                let response = self.client.get(&value.url()).send().await?;
+                let bytes = self.resp_bytes(response).await?;
+                value.set_response(&self.encrypt_bytes(bytes.as_ref(), &key.bytes()).unwrap());
+                let _ =
+                    self.db
+                        .compare_and_swap(key.bytes(), Some(cv_bytes), Some(value.bytes()))?;
+            } else {
+                key.log_cache();
+            }
         } else {
-            let response = self.client.get(&entry.url()).send().await?;
+            key.log_caching();
+            let response = self.client.get(&value.url()).send().await?;
             let bytes = self.resp_bytes(response).await?;
-            self.handle_new_entry(entry, bytes).await?;
+            value.set_response(&self.encrypt_bytes(bytes.as_ref(), &key.bytes()).unwrap());
+            let _ = self.db.insert(key.bytes(), value.bytes())?;
         }
         Ok(())
     }
@@ -317,7 +367,7 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     pub async fn concurrent_fetch(&mut self) -> Result<()> {
         let mut tasks = Vec::new();
         for entry in (*self.entries).clone() {
-            let mut fetcher = self.clone();
+            let fetcher = self.clone();
             tasks.push(tokio::spawn(async move {
                 fetcher.handle_entry_conc(entry.clone()).await
             }));
@@ -349,14 +399,15 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     }
 
     /// Fetches and stores all results from the db
-    pub fn pairs(&self) -> Result<Vec<(E, Vec<u8>)>> {
+    pub fn pairs<K: EntryKey, V: EntryValue>(&self) -> Result<Vec<(K, V)>> {
         self.db
             .iter()
             .map(|x| {
-                let (key, value) = x.unwrap();
+                let (key_iv, value_iv) = x.unwrap();
+                let key = K::from_ivec(key_iv);
                 let bytes =
-                    Self::dec_or_clone(self.encryption_method, value.as_ref(), key.as_ref())?;
-                Ok((E::from_ivec(key), bytes))
+                    Self::dec_or_clone(self.encryption_method, value_iv.as_ref(), &key.bytes())?;
+                Ok((key, V::from_ivec(IVec::from(bytes))))
             })
             .collect()
     }
@@ -369,40 +420,41 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     pub async fn select(&self, key: E, op: SelectOp) -> Result<Option<Vec<u8>>> {
         match op {
             SelectOp::Update => {
-                if let Some(old_key) = key.is_modified(self.db.iter().keys()) {
-                    let mut batch = Batch::default();
-                    batch.remove(old_key);
-                    let response = self.client.get(&key.url()).send().await?;
-                    let bytes = self.resp_bytes(response).await?;
+                // if let Some(old_key) = key.is_modified(self.db.iter().keys()) {
+                //     let mut batch = Batch::default();
+                //     batch.remove(old_key);
+                //     let response = self.client.get(&key.url()).send().await?;
+                //     let bytes = self.resp_bytes(response).await?;
 
-                    // Encrypt the bytes before inserting into the db
-                    if let Some(encryption_method) = &self.encryption_method {
-                        let bytes =
-                            encryption_method.encrypt(bytes.as_ref(), &key.entry_bytes())?;
-                        batch.insert(key.entry_bytes(), bytes.as_slice());
-                    } else {
-                        batch.insert(key.entry_bytes(), bytes.as_ref());
-                    }
-                    self.db.apply_batch(batch)?;
-                }
+                //     // Encrypt the bytes before inserting into the db
+                //     if let Some(encryption_method) = &self.encryption_method {
+                //         let bytes =
+                //             encryption_method.encrypt(bytes.as_ref(), &key.entry_bytes())?;
+                //         batch.insert(key.entry_bytes(), bytes.as_slice());
+                //     } else {
+                //         batch.insert(key.entry_bytes(), bytes.as_ref());
+                //     }
+                //     self.db.apply_batch(batch)?;
+                // }
                 Ok(None)
             }
 
             SelectOp::Delete => {
-                let key = key.entry_bytes();
-                let _ = self.db.remove(key)?;
+                // let key = key.entry_bytes();
+                // let _ = self.db.remove(key)?;
                 Ok(None)
             }
             SelectOp::Get => {
-                let key = key.entry_bytes();
-                let resp = self.db.get(&key)?;
-                if let Some(ivec) = resp {
-                    let bytes =
-                        Self::dec_or_clone(self.encryption_method, ivec.as_ref(), key.as_ref())?;
-                    Ok(Some(bytes))
-                } else {
-                    Ok(None)
-                }
+                // let key = key.entry_bytes();
+                // let resp = self.db.get(&key)?;
+                // if let Some(ivec) = resp {
+                //     let bytes =
+                //         Self::dec_or_clone(self.encryption_method, ivec.as_ref(), key.as_ref())?;
+                //     Ok(Some(bytes))
+                // } else {
+                //     Ok(None)
+                // }
+                Ok(None)
             }
         }
     }
@@ -412,9 +464,11 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
         let mut tasks = Vec::new();
 
         for entry in (*self.entries).clone() {
-            let key = entry.url();
-            let resp = self.db.get(&key)?;
-            let file_name = Url::parse(&key)?
+            let key = entry.key();
+            let ivec = self.db.get(key.bytes())?.unwrap();
+            let value = E::Value::from_ivec(ivec);
+            let resp = value.response();
+            let file_name = Url::parse(&value.url())?
                 .path_segments()
                 .unwrap()
                 .last()
@@ -424,13 +478,11 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
             if !dir.exists() {
                 create_dir(&dir).await?;
             }
-            if let Some(ivec) = resp {
-                let bytes =
-                    Self::dec_or_clone(self.encryption_method, ivec.as_ref(), key.as_bytes())?;
-                tasks.push(tokio::spawn(
-                    async move { tokio::fs::write(path, bytes).await },
-                ))
-            }
+
+            let bytes = Self::dec_or_clone(self.encryption_method, resp.deref(), &key.bytes())?;
+            tasks.push(tokio::spawn(
+                async move { tokio::fs::write(path, bytes).await },
+            ))
         }
 
         join_all(tasks).await.into_iter().try_for_each(|x| x?)?;

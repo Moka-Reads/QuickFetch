@@ -1,52 +1,72 @@
-use bincode;
-use quickfetch_derive::QFEntry;
 use quickfetch_traits::Entry;
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use sled::IVec;
 use std::path::Path;
 use tokio::fs::read_to_string;
+
+use crate::key_val::{GHValue, SimpleValue};
 /// A Minimal Package Implementation
 ///
 /// This module provides a minimal package implementation
-/// If you are looking to use Github releases as a source for your packages,
-/// you can use the `github_release` method to create a new package.
-#[derive(QFEntry, Debug, Clone, Serialize, Deserialize)]
-pub struct Package {
-    #[mod_eq]
-    #[name]
+///
+/// It requires:
+/// - a name (String)
+/// - a semantic version (String)
+/// - a URL (String)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimplePackage {
     name: String,
-    #[mod_neq]
-    #[version]
     version: String,
-    #[mod_neq]
-    #[url]
     url: String,
 }
 
-/// A Github Release Implementation that can be used with a config file
-/// and then converts to `Package` struct.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct GithubReleaseBuilder {
-    user: String,
-    repo: String,
-    asset: String,
-    tag: String,
-}
+impl Entry for SimplePackage {
+    type Key = String;
+    type Value = SimpleValue;
 
-impl From<GithubReleaseBuilder> for Package {
-    fn from(value: GithubReleaseBuilder) -> Self {
-        let url = format!(
-            "https://github.com/{}/{}/releases/download/{}/{}",
-            &value.user, &value.repo, &value.tag, &value.asset
-        );
-        let name = format!("{}/{} - {}", &value.user, &value.repo, &value.asset);
-        Package::new(&name, &value.tag, &url)
+    fn key(&self) -> Self::Key {
+        self.name.clone()
+    }
+
+    fn value(&self) -> Self::Value {
+        SimpleValue::new(self.version.clone(), self.url.clone())
     }
 }
 
-pub fn github_to_packages(v: Vec<GithubReleaseBuilder>) -> Vec<Package> {
-    v.into_iter().map(Package::from).collect()
+/// A Minimal GH Package Implementation
+///
+/// It requires:
+/// - an owner (String)
+/// - a repo (String)
+/// - a tag (String)
+/// - an asset (String)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GHPackage {
+    owner: String,
+    repo: String,
+    tag: String,
+    asset: String,
+}
+
+impl Entry for GHPackage {
+    type Key = String;
+    type Value = GHValue;
+
+    fn key(&self) -> Self::Key {
+        format!(
+            "{} {}/{} [{}]",
+            &self.asset, self.owner, self.repo, &self.tag
+        )
+    }
+
+    fn value(&self) -> Self::Value {
+        GHValue::new(
+            self.owner.clone(),
+            self.repo.clone(),
+            self.tag.clone(),
+            self.asset.clone(),
+        )
+    }
 }
 
 /// A Minimal Config Implementation
@@ -64,15 +84,7 @@ enum Mode {
 }
 
 #[allow(dead_code)]
-impl Package {
-    pub fn new(name: &str, version: &str, url: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            version: version.to_string(),
-            url: url.to_string(),
-        }
-    }
-
+impl SimplePackage {
     pub fn verify_valid_version(&self) -> bool {
         Version::parse(&self.version).is_ok()
     }

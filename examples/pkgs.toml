@@ -1,6 +1,6 @@
 [[packages]]
 name = "mufiz-rpm-aarch64"
-version = "0.6.0"
+version = "0.7.0"
 url = "https://github.com/Mustafif/MufiZ/releases/download/v0.6.0/mufiz-0.6.0-1.aarch64.rpm"
 
 [[packages]]
