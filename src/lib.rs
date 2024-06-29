@@ -1,34 +1,4 @@
-//! # QuickFetch
-//!
-//! Developed by Mustafif Khan | MoKa Reads 2024
-//!
-//! **This library is under the MIT License**
-//!
-//! This library is built to handle multiple requests within a `Client` (`reqwest` client which will handle it all under a Client Pool)
-//! , cache the response results, and handle these in parallel and asynchronously.
-//!
-//! The goal is to be a one-stop shop for handling local package manager development to handle multiple
-//! packages with a local cache to easily update, get and remove the different responses.
-//!
-//! ## Example
-//! ```rust
-//! use quickfetch::{Fetcher,package::{Package, Config}, FetchMethod};
-//! use quickfetch_traits::Entry;
-//! use quickfetch::home_plus;
-//!
-//! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
-//!    quickfetch::pretty_env_logger::init();
-//!    let config: Config<Package> = Config::from_toml_file("examples/pkgs.toml").await?;
-//!    // store db in $HOME/.quickfetch
-//!    let mut fetcher: Fetcher<Package> = Fetcher::new(config.packages(), home_plus(".quickfetch"))?;
-//!    fetcher.fetch(FetchMethod::Channel).await?;
-//!    // write the packages to $HOME/pkgs
-//!    fetcher.write_all(home_plus("pkgs")).await?;
-//!    Ok(())
-//! }
-//! ```
-
+#![doc = include_str!("../README.md")]
 use sled::IVec;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -40,6 +10,7 @@ use bytes::Bytes;
 use encryption::EncryptionMethod;
 use futures::future::join_all;
 use futures::StreamExt;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use kanal::bounded_async as channel;
 pub use pretty_env_logger;
 pub use quickfetch_traits as traits;
@@ -49,7 +20,6 @@ use sled::Db;
 use tokio::fs::create_dir;
 use tokio::sync::Semaphore;
 use url::Url;
-
 /// Provides different types of encryption methods that can be used
 pub mod encryption;
 /// Provides structures that can be used as a Key and Value for Fetcher
@@ -67,11 +37,24 @@ pub fn home_plus<P: AsRef<Path>>(sub_dir: P) -> PathBuf {
 /// - `Bytes`: Fetch the full response using the `bytes` method
 /// - `Chunk`: Fetch the response in chunks using the `chunk` method
 /// - `BytesStream`: Fetch the response in a stream of bytes using the `bytes_stream` method
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ResponseMethod {
     Bytes,
     Chunk,
     BytesStream,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NotifyMethod {
+    Log,
+    ProgressBar,
+    Silent,
+}
+
+impl Default for NotifyMethod {
+    fn default() -> Self {
+        Self::Log
+    }
 }
 
 /// `FetchMethod` enum to specify the method of fetching the response
@@ -111,13 +94,8 @@ pub struct Fetcher<E: Entry> {
     client: Client,
     response_method: ResponseMethod,
     encryption_method: Option<EncryptionMethod>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum SelectOp {
-    Update,
-    Delete,
-    Get,
+    notify_method: NotifyMethod,
+    multi_pb: Arc<MultiProgress>,
 }
 
 // Constructor and Setup Methods
@@ -135,6 +113,8 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
             client,
             response_method: ResponseMethod::default(),
             encryption_method: None,
+            notify_method: NotifyMethod::Log,
+            multi_pb: Arc::new(MultiProgress::new()),
         })
     }
 
@@ -153,8 +133,29 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     }
 
     /// Set the response method to be used for fetching the response
+    ///
+    /// By default `self.response_method = ResponseMethod::Bytes`
+    ///
+    /// - `Bytes`: Fetch the full response using the `bytes` method
+    /// - `Chunk`: Fetch the response in chunks using the `chunk` method
+    /// - `BytesStream`: Fetch the response in a stream of bytes using the `bytes_stream` method
+    ///
+    /// If `response_method` is `Chunk` or `BytesStream`, then `notify_method` is set to `ProgressBar`
+    /// and a `MultiProgress` instance is created
     pub fn set_response_method(&mut self, response_method: ResponseMethod) {
-        self.response_method = response_method
+        self.response_method = response_method;
+        if response_method == ResponseMethod::Chunk
+            || response_method == ResponseMethod::BytesStream
+        {
+            self.notify_method = NotifyMethod::ProgressBar;
+        }
+    }
+
+    /// Set the notify method to be used for notifying the user
+    /// By default `self.notify_method = NotifyMethod::Log`
+    pub fn set_notify_method(&mut self, notify_method: NotifyMethod) {
+        self.notify_method = notify_method;
+        if notify_method == NotifyMethod::ProgressBar {}
     }
 }
 
@@ -198,11 +199,22 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     ) {
         self.db.import(export)
     }
+
+    pub fn clear(&self) -> Result<()> {
+        self.db.clear()?;
+        Ok(())
+    }
 }
 
 // Handles and Fetching Entries
 impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
-    async fn resp_bytes(&self, response: Response) -> Result<Bytes> {
+    async fn resp_bytes(&self, response: Response, name: String) -> Result<Bytes> {
+        let len = response.content_length().unwrap_or(0);
+        let style = ProgressStyle::default_bar()
+            .template("[{msg}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+            .unwrap()
+            .progress_chars("#>-");
+
         match &self.response_method {
             ResponseMethod::Bytes => {
                 let bytes = response.bytes().await?;
@@ -211,44 +223,36 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
             ResponseMethod::BytesStream => {
                 let mut stream = response.bytes_stream();
                 let mut bytes = bytes::BytesMut::new();
+
+                let pb = self.multi_pb.add(ProgressBar::new(len));
+                pb.set_style(style.clone());
+                pb.set_message(name.clone());
+
                 while let Some(item) = stream.next().await {
                     let b = item?;
-                    bytes.extend_from_slice(&b)
+                    bytes.extend_from_slice(&b);
+                    pb.inc(b.len() as u64);
                 }
+                pb.finish();
 
                 Ok(bytes.freeze())
             }
             ResponseMethod::Chunk => {
                 let mut bytes = bytes::BytesMut::new();
                 let mut response = response;
+
+                let pb = self.multi_pb.add(ProgressBar::new(len));
+                pb.set_style(style.clone());
+                pb.set_message(name.clone());
                 while let Some(chunk) = response.chunk().await? {
-                    bytes.extend_from_slice(&chunk)
+                    bytes.extend_from_slice(&chunk);
+                    pb.inc(chunk.len() as u64);
                 }
+                pb.finish();
                 Ok(bytes.freeze())
             }
         }
     }
-
-    // async fn handle_modified_entry(&mut self, entry: E, bytes: Bytes, old_key: IVec) -> Result<()> {
-    //     let mut batch = Batch::default();
-    //     batch.remove(old_key);
-    //     entry.log_caching();
-
-    //     // Encrypt the bytes before inserting into the db
-    //     let bytes = self.encrypt_bytes(bytes, &entry.entry_bytes())?;
-    //     batch.insert(entry.entry_bytes(), bytes.as_ref());
-    //     self.db.apply_batch(batch)?;
-    //     Ok(())
-    // }
-
-    // async fn handle_new_entry(&mut self, entry: E, bytes: Bytes) -> Result<()> {
-    //     entry.log_caching();
-
-    //     // Encrypt the bytes before inserting into the db
-    //     let bytes = self.encrypt_bytes(bytes, &entry.entry_bytes())?;
-    //     let _ = self.db.insert(entry.entry_bytes(), bytes.as_ref())?;
-    //     Ok(())
-    // }
 
     fn encrypt_bytes(&self, bytes: &[u8], key: &[u8]) -> Result<Vec<u8>> {
         if let Some(encryption_method) = &self.encryption_method {
@@ -267,7 +271,9 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
 
         // key doesn't exist in the db
         if let Some(bytes) = bytes {
-            key.log_caching();
+            if self.notify_method == NotifyMethod::Log {
+                key.log_caching();
+            }
             let bytes = self.encrypt_bytes(bytes.as_ref(), key_bytes.as_ref())?;
             value.set_response(bytes.as_ref());
             let _ = self.db.insert(key.bytes(), value.bytes())?;
@@ -275,14 +281,16 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
             let cv_bytes = curr_val.to_vec();
             let cv = E::Value::from_ivec(curr_val);
             if !value.is_same(&cv) {
-                key.log_caching();
+                if self.notify_method == NotifyMethod::Log {
+                    key.log_caching();
+                }
                 let response = self.client.get(&value.url()).send().await?;
-                let bytes = self.resp_bytes(response).await?;
+                let bytes = self.resp_bytes(response, key.to_string()).await?;
                 value.set_response(&self.encrypt_bytes(bytes.as_ref(), &key.bytes()).unwrap());
                 let _ =
                     self.db
                         .compare_and_swap(key.bytes(), Some(cv_bytes), Some(value.bytes()))?;
-            } else {
+            } else if self.notify_method == NotifyMethod::Log {
                 key.log_cache();
             }
         }
@@ -317,7 +325,12 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
                             .send()
                             .await
                             .unwrap();
-                        bytes = Some(self_clone.resp_bytes(response).await.unwrap());
+                        bytes = Some(
+                            self_clone
+                                .resp_bytes(response, entry.key().to_string())
+                                .await
+                                .unwrap(),
+                        );
                     }
                     tx.send((entry.clone(), bytes)).await.unwrap();
                 }
@@ -343,20 +356,24 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
             let cv_bytes = curr_val.to_vec();
             let cv = E::Value::from_ivec(curr_val);
             if !value.is_same(&cv) {
-                key.log_caching();
+                if self.notify_method == NotifyMethod::Log {
+                    key.log_caching();
+                }
                 let response = self.client.get(&value.url()).send().await?;
-                let bytes = self.resp_bytes(response).await?;
+                let bytes = self.resp_bytes(response, key.to_string()).await?;
                 value.set_response(&self.encrypt_bytes(bytes.as_ref(), &key.bytes()).unwrap());
                 let _ =
                     self.db
                         .compare_and_swap(key.bytes(), Some(cv_bytes), Some(value.bytes()))?;
-            } else {
+            } else if self.notify_method == NotifyMethod::Log {
                 key.log_cache();
             }
         } else {
-            key.log_caching();
+            if self.notify_method == NotifyMethod::Log {
+                key.log_caching();
+            }
             let response = self.client.get(&value.url()).send().await?;
-            let bytes = self.resp_bytes(response).await?;
+            let bytes = self.resp_bytes(response, key.to_string()).await?;
             value.set_response(&self.encrypt_bytes(bytes.as_ref(), &key.bytes()).unwrap());
             let _ = self.db.insert(key.bytes(), value.bytes())?;
         }
@@ -412,51 +429,35 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
             .collect()
     }
 
-    /// Selects the entry based on the key and operation
-    ///
-    /// - `Update`: Update the entry in the db (if successful returns `Ok(None)`)
-    /// - `Delete`: Delete the entry in the db (if successful returns `Ok(None)`)
-    /// - `Get`: Get the entry in the db (if successful returns `Ok(Some(Vec<u8>))`)
-    pub async fn select(&self, key: E, op: SelectOp) -> Result<Option<Vec<u8>>> {
-        match op {
-            SelectOp::Update => {
-                // if let Some(old_key) = key.is_modified(self.db.iter().keys()) {
-                //     let mut batch = Batch::default();
-                //     batch.remove(old_key);
-                //     let response = self.client.get(&key.url()).send().await?;
-                //     let bytes = self.resp_bytes(response).await?;
+    /// Gets an entry from the db by key
+    pub fn get<K: EntryKey, V: EntryValue>(&self, key: K) -> Result<Option<V>> {
+        if let Some(value_iv) = self.db.get(key.bytes())? {
+            let bytes =
+                Self::dec_or_clone(self.encryption_method, value_iv.as_ref(), &key.bytes())?;
+            Ok(Some(V::from_ivec(IVec::from(bytes))))
+        } else {
+            Ok(None)
+        }
+    }
 
-                //     // Encrypt the bytes before inserting into the db
-                //     if let Some(encryption_method) = &self.encryption_method {
-                //         let bytes =
-                //             encryption_method.encrypt(bytes.as_ref(), &key.entry_bytes())?;
-                //         batch.insert(key.entry_bytes(), bytes.as_slice());
-                //     } else {
-                //         batch.insert(key.entry_bytes(), bytes.as_ref());
-                //     }
-                //     self.db.apply_batch(batch)?;
-                // }
-                Ok(None)
-            }
+    /// Removes an entry from the db by key
+    pub fn remove<K: EntryKey>(&self, key: K) -> Result<()> {
+        self.db.remove(key.bytes())?;
+        Ok(())
+    }
 
-            SelectOp::Delete => {
-                // let key = key.entry_bytes();
-                // let _ = self.db.remove(key)?;
-                Ok(None)
-            }
-            SelectOp::Get => {
-                // let key = key.entry_bytes();
-                // let resp = self.db.get(&key)?;
-                // if let Some(ivec) = resp {
-                //     let bytes =
-                //         Self::dec_or_clone(self.encryption_method, ivec.as_ref(), key.as_ref())?;
-                //     Ok(Some(bytes))
-                // } else {
-                //     Ok(None)
-                // }
-                Ok(None)
+    /// Updates an entry in the db by key and new value
+    pub fn update<K: EntryKey, V: EntryValue>(&self, key: K, value: V) -> Result<()> {
+        if let Some(curr_val) = self.db.get(key.bytes())? {
+            let cv_bytes = curr_val.to_vec();
+            let cv = V::from_ivec(curr_val);
+            if !value.is_same(&cv) {
+                let _ =
+                    self.db
+                        .compare_and_swap(key.bytes(), Some(cv_bytes), Some(value.bytes()))?;
             }
         }
+        Ok(())
     }
 
     /// Writes all the fetched data to the specified directory

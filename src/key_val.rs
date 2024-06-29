@@ -1,4 +1,3 @@
-
 use quickfetch_traits::EntryValue;
 use serde::{Deserialize, Serialize};
 use sled::IVec;

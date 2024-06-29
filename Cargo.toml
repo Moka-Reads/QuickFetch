@@ -43,6 +43,7 @@ aes-gcm = "0.10.3"
 quickfetch_traits = { path = "quickfetch_traits", version = "0.1" }
 itertools = "0.13.0"
 kanal = "0.1.0-pre8"
+indicatif = { version = "0.17.8", features = ["futures"] }
 #salsa20 = "0.10.2"
 #blowfish = "0.9.1"
 #twofish = "0.7.1"
