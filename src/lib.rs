@@ -26,6 +26,9 @@ pub mod encryption;
 pub mod key_val;
 /// Provides different types of packages that can be used
 pub mod package;
+#[cfg(feature = "unstable")]
+/// Provides a Fetcher-like struct that can be used to fetch packages while watching a config file
+pub mod watcher;
 
 /// Returns the path to the home directory with the sub directory appended
 pub fn home_plus<P: AsRef<Path>>(sub_dir: P) -> PathBuf {

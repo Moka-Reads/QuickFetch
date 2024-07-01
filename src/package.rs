@@ -78,7 +78,8 @@ pub struct Config<PK> {
     packages: Vec<PK>,
 }
 
-enum Mode {
+#[derive(Debug, Clone, Copy)]
+pub enum Mode {
     Json,
     Toml,
 }
@@ -91,9 +92,9 @@ impl SimplePackage {
 }
 
 #[allow(dead_code)]
-impl<PK> Config<PK> {
+impl<PK: Clone> Config<PK> {
     /// Reads a configuration file (JSON or TOML) and returns a Config struct.
-    async fn from_file<P>(path: P, mode: Mode) -> anyhow::Result<Self>
+    pub async fn from_file<P>(path: P, mode: Mode) -> anyhow::Result<Self>
     where
         P: AsRef<Path> + Send + Sync,
         PK: for<'de> Deserialize<'de>,
@@ -131,5 +132,10 @@ impl<PK> Config<PK> {
     /// Returns a reference to the list of packages.
     pub fn packages(&self) -> &[PK] {
         &self.packages
+    }
+
+    /// Returns an owned list of packages.
+    pub fn packages_owned(&self) -> Vec<PK> {
+        self.packages.clone()
     }
 }

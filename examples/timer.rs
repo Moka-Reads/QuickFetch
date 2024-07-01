@@ -9,7 +9,7 @@ async fn main() -> anyhow::Result<()> {
     let config: Config<SimplePackage> = Config::from_toml_file("examples/pkgs.toml").await?;
 
     let mut fetcher1 = Fetcher::new(config.packages(), "timer_1")?;
-    let mut fetcher2 = Fetcher::new(config.packages(), "timer_2")?;
+    let fetcher2 = Fetcher::new(config.packages(), "timer_2")?;
 
     let start = Instant::now();
     fetcher1.concurrent_fetch().await?;

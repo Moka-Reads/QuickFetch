@@ -4,8 +4,6 @@
 
 Developed by Mustafif Khan | MoKa Reads 2024
 
-**This library is licensed under the MIT License**
-
 > :warning: WORK IN PROGRESS AND NOT READY TO BE USED FOR PRODUCTION YET
 
 This library is built to handle multiple requests within a `Client` (`reqwest` client which will handle it all under a Client Pool)

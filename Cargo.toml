@@ -10,16 +10,16 @@ homepage = "https://mokareads.org"
 repository = "https://github.com/Moka-Reads/QuickFetch"
 
 [[example]]
-name = "mufiz"
-path = "examples/mufiz.rs"
-
-[[example]]
 name = "mufiz_pkg"
 path = "examples/mufiz_pkg.rs"
 
 [[example]]
 name = "timer"
 path = "examples/timer.rs"
+
+[[example]]
+name = "watcher"
+path = "examples/watcher.rs"
 
 [dependencies]
 anyhow = "1.0.86"
@@ -44,12 +44,16 @@ quickfetch_traits = { path = "quickfetch_traits", version = "0.1" }
 itertools = "0.13.0"
 kanal = "0.1.0-pre8"
 indicatif = { version = "0.17.8", features = ["futures"] }
+notify = { version = "6.1" }
 #salsa20 = "0.10.2"
 #blowfish = "0.9.1"
 #twofish = "0.7.1"
-
 [profile.release]
 strip = true      # Automatically strip symbols from the binary.
 lto = true        # Enables link time optimizations to optimize at link-stage
 codegen-units = 1 # allows for maximum size reduction optimizations
 panic = "abort"   # reduces size of panic unwind backtrace
+
+[features]
+default = []
+unstable = []
