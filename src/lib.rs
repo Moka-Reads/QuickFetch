@@ -80,6 +80,7 @@ impl Default for NotifyMethod {
 pub enum FetchMethod {
     Concurrent,
     Channel,
+    Watch,
 }
 
 impl Default for FetchMethod {
@@ -294,7 +295,7 @@ impl<
     ///
     /// The fetching method is `concurrent` and the notification method is `log`
     pub async fn watching(&mut self) {
-        println!("Watching {}", &self.config_path.display());
+        info!("Watching {}", &self.config_path.display());
         if let Err(e) = self.watch().await {
             error!("Error: {:?}", e)
         }
@@ -487,6 +488,7 @@ impl<
         match method {
             FetchMethod::Concurrent => self.concurrent_fetch().await?,
             FetchMethod::Channel => self.channel_fetch().await?,
+            FetchMethod::Watch => self.watching().await,
         }
         Ok(())
     }
