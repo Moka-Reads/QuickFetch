@@ -37,6 +37,16 @@ pub fn home_plus<P: AsRef<Path>>(sub_dir: P) -> PathBuf {
     dirs::home_dir().unwrap().join(sub_dir)
 }
 
+/// Returns the path to the config directory with the sub directory appended
+pub fn config_plus<P: AsRef<Path>>(sub_dir: P) -> PathBuf {
+    dirs::config_dir().unwrap().join(sub_dir)
+}
+
+/// Returns the path to the cache directory with the sub directory appended
+pub fn cache_plus<P: AsRef<Path>>(sub_dir: P) -> PathBuf {
+    dirs::cache_dir().unwrap().join(sub_dir)
+}
+
 /// `ResponseMethod` enum to specify the method of fetching the response
 ///
 /// - `Bytes`: Fetch the full response using the `bytes` method
@@ -362,7 +372,7 @@ impl<
                 if self.notify_method == NotifyMethod::Log {
                     key.log_caching();
                 }
-                let response = self.client.get(&value.url()).send().await?;
+                let response = self.client.get(value.url()).send().await?;
                 let bytes = self.resp_bytes(response, key.to_string()).await?;
                 value.set_response(&self.encrypt_bytes(bytes.as_ref(), &key.bytes()).unwrap());
                 let _ =
@@ -437,7 +447,7 @@ impl<
                 if self.notify_method == NotifyMethod::Log {
                     key.log_caching();
                 }
-                let response = self.client.get(&value.url()).send().await?;
+                let response = self.client.get(value.url()).send().await?;
                 let bytes = self.resp_bytes(response, key.to_string()).await?;
                 value.set_response(&self.encrypt_bytes(bytes.as_ref(), &key.bytes()).unwrap());
                 let _ =
@@ -450,7 +460,7 @@ impl<
             if self.notify_method == NotifyMethod::Log {
                 key.log_caching();
             }
-            let response = self.client.get(&value.url()).send().await?;
+            let response = self.client.get(value.url()).send().await?;
             let bytes = self.resp_bytes(response, key.to_string()).await?;
             value.set_response(&self.encrypt_bytes(bytes.as_ref(), &key.bytes()).unwrap());
             let _ = self.db.insert(key.bytes(), value.bytes())?;
