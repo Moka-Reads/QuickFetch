@@ -19,6 +19,7 @@ packages with a local cache to easily update, get and remove the different respo
 // examples/mufiz_pkg.rs
 use std::path::PathBuf;
 
+use quickfetch::encryption::AESGCM;
 use quickfetch::package::SimplePackage;
 use quickfetch::Fetcher;
 use quickfetch::{pretty_env_logger, FetchMethod};
@@ -28,8 +29,13 @@ async fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
     let config_path = "examples/watch.toml";
 
-    let mut fetcher: Fetcher<SimplePackage> =
-        Fetcher::new(config_path, quickfetch::package::Mode::Toml, "mufiz").await?;
+    let mut fetcher: Fetcher<SimplePackage, AESGCM> = Fetcher::new(
+        config_path,
+        quickfetch::package::Mode::Toml,
+        "mufiz",
+        AESGCM,
+    )
+    .await?;
     // To enable progress bar for fetching
     // fetcher.set_notify_method(quickfetch::NotifyMethod::ProgressBar);
     // Set the response method to BytesStream or Chunk for progress bars
@@ -46,6 +52,19 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+## Encryption Methods Available
+
+All of these types are unit structs that can be found in the
+`quickfetch::encryption` module.
+
+- `AESGCM`:  AES GCM encryption method (default under the `aes` feature)
+- `ChaCha20Poly` : ChaCha20 Poly1305 encryption method (under the `chacha20poly` feature)
+- `AESGCMSIV`:  AES GCM SIV encryption method (under the `aes-gcm-siv` feature)
+- `AESSIV` : AES SIV encryption method (under the `aes-siv` feature)
+- `Ascon` : Ascon encryption method (under the `ascon-aead` feature)
+- `CCM`: CCM encryption method (under the `ccm` feature)
+- `Deoxys` : Deoxys encryption method (under the `deoxys` feature)
+- `EAX` : EAX encryption method (under the `eax` feature)
 
 ## License
 

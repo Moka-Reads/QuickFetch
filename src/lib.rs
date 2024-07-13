@@ -5,7 +5,6 @@ extern crate log;
 use anyhow::Result;
 pub use bincode;
 use bytes::Bytes;
-use encryption::EncryptionMethod;
 use futures::future::join_all;
 use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -14,7 +13,7 @@ use notify::{Config as NConfig, Event, EventKind, RecommendedWatcher, RecursiveM
 use package::{Config, Mode};
 pub use pretty_env_logger;
 pub use quickfetch_traits as traits;
-use quickfetch_traits::{Entry, EntryKey, EntryValue};
+use quickfetch_traits::{EncryptionMethod, Entry, EntryKey, EntryValue};
 use reqwest::{Client, Response};
 use serde::Deserialize;
 use sled::Db;
@@ -93,7 +92,7 @@ impl Default for ResponseMethod {
 /// - `response_method`: Method of fetching the response
 /// - `encryption_method`: Method of encrypting and decrypting the response
 #[derive(Debug, Clone)]
-pub struct Fetcher<E: Entry> {
+pub struct Fetcher<E: Entry, K: EncryptionMethod> {
     entries: Arc<Vec<E>>,
     config_path: PathBuf,
     config: Config<E>,
@@ -102,18 +101,21 @@ pub struct Fetcher<E: Entry> {
     db_path: PathBuf,
     client: Client,
     response_method: ResponseMethod,
-    encryption_method: Option<EncryptionMethod>,
+    encryption_method: K,
     notify_method: NotifyMethod,
     multi_pb: Arc<MultiProgress>,
 }
 
 // Constructor and Setup Methods
-impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetcher<E> {
+impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>, K: EncryptionMethod>
+    Fetcher<E, K>
+{
     /// Create a new `Fetcher` instance with list of urls and db path
     pub async fn new<P: AsRef<Path> + Send + Sync>(
         config_path: P,
         config_type: Mode,
         db_path: P,
+        encryption_method: K,
     ) -> Result<Self> {
         let client = Client::builder()
             .brotli(true) // by default enable brotli compression
@@ -131,7 +133,7 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
             config_type,
             client,
             response_method: ResponseMethod::default(),
-            encryption_method: None,
+            encryption_method,
             notify_method: NotifyMethod::Log,
             multi_pb: Arc::new(MultiProgress::new()),
         })
@@ -147,8 +149,8 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
 
     /// Set the encryption method to be used for encrypting and decrypting the response data
     /// By default `self.encryption_method = None`
-    pub fn set_encryption_method(&mut self, encryption_method: EncryptionMethod) {
-        self.encryption_method = Some(encryption_method)
+    pub fn set_encryption_method(&mut self, encryption_method: K) {
+        self.encryption_method = encryption_method
     }
 
     /// Set the response method to be used for fetching the response
@@ -179,7 +181,7 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
 }
 
 // Database Operations
-impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
+impl<E: Entry + Clone + Send + Sync + 'static, K: EncryptionMethod> Fetcher<E, K> {
     /// Removes the `db` directory (use with caution as this uses `tokio::fs::remove_dir_all`)
     pub async fn remove_db_dir(&self) -> Result<()> {
         tokio::fs::remove_dir_all(&self.db_path).await?;
@@ -226,7 +228,11 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
 }
 
 // Handles and Fetching Entries
-impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetcher<E> {
+impl<
+        E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>,
+        P: EncryptionMethod + Send + Sync + Copy + Clone + 'static,
+    > Fetcher<E, P>
+{
     async fn resp_bytes(&self, response: Response, name: String) -> Result<Bytes> {
         let len = response.content_length().unwrap_or(0);
         let style = ProgressStyle::default_bar()
@@ -286,16 +292,17 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
 
     async fn watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<Event>>)> {
         let (tx, rx) = channel(1);
-
         let watcher = RecommendedWatcher::new(
             move |res| {
-                futures::executor::block_on(async {
-                    tx.send(res).await.unwrap();
-                })
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = tx.clone().send(res).await {
+                        eprintln!("Error sending event: {}", e);
+                    }
+                });
             },
             NConfig::default(),
         )?;
-
         Ok((watcher, rx))
     }
 
@@ -330,12 +337,8 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
     }
 
     fn encrypt_bytes(&self, bytes: &[u8], key: &[u8]) -> Result<Vec<u8>> {
-        if let Some(encryption_method) = &self.encryption_method {
-            let bytes = encryption_method.encrypt(bytes.as_ref(), key)?;
-            Ok(bytes)
-        } else {
-            Ok(bytes.to_vec())
-        }
+        let bytes = self.encryption_method.encrypt(bytes.as_ref(), key)?;
+        Ok(bytes)
     }
 
     async fn handle_entry_channel(&self, entry: E, bytes: Option<Bytes>) -> Result<()> {
@@ -478,16 +481,8 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
         Ok(())
     }
 
-    fn dec_or_clone(
-        encryption_method: Option<EncryptionMethod>,
-        value: &[u8],
-        key: &[u8],
-    ) -> Result<Vec<u8>> {
-        if let Some(encryption_method) = encryption_method {
-            encryption_method.decrypt(value, key)
-        } else {
-            Ok(value.to_vec())
-        }
+    fn dec(encryption_method: P, value: &[u8], key: &[u8]) -> Result<Vec<u8>> {
+        encryption_method.decrypt(value, key)
     }
 
     /// Fetches and stores all results from the db
@@ -497,8 +492,7 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
             .map(|x| {
                 let (key_iv, value_iv) = x.unwrap();
                 let key = K::from_ivec(key_iv);
-                let bytes =
-                    Self::dec_or_clone(self.encryption_method, value_iv.as_ref(), &key.bytes())?;
+                let bytes = Self::dec(self.encryption_method, value_iv.as_ref(), &key.bytes())?;
                 Ok((key, V::from_ivec(IVec::from(bytes))))
             })
             .collect()
@@ -507,8 +501,7 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
     /// Gets an entry from the db by key
     pub fn get<K: EntryKey, V: EntryValue>(&self, key: K) -> Result<Option<V>> {
         if let Some(value_iv) = self.db.get(key.bytes())? {
-            let bytes =
-                Self::dec_or_clone(self.encryption_method, value_iv.as_ref(), &key.bytes())?;
+            let bytes = Self::dec(self.encryption_method, value_iv.as_ref(), &key.bytes())?;
             Ok(Some(V::from_ivec(IVec::from(bytes))))
         } else {
             Ok(None)
@@ -555,7 +548,7 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
                 create_dir(&dir).await?;
             }
 
-            let bytes = Self::dec_or_clone(self.encryption_method, resp.deref(), &key.bytes())?;
+            let bytes = Self::dec(self.encryption_method, resp.deref(), &key.bytes())?;
             tasks.push(tokio::spawn(
                 async move { tokio::fs::write(path, bytes).await },
             ))

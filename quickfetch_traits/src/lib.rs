@@ -1,9 +1,11 @@
 #[macro_use]
 extern crate log;
+use aead::{generic_array::GenericArray, Aead, KeyInit};
+use anyhow::Result;
+use rand::{rngs::OsRng, RngCore};
 use sled::IVec;
 use std::borrow::Cow;
 use std::fmt::Display;
-
 /// Entry trait that will be used to be able to fetch and cache data as the Key
 pub trait Entry {
     type Key: EntryKey + Send + Sync;
@@ -56,4 +58,43 @@ pub trait EntryValue {
     fn is_same(&self, other: &Self) -> bool
     where
         Self: Sized;
+}
+
+const NONCE_SIZE: usize = 12;
+
+pub trait EncryptionMethod {
+    type Cipher: Aead + KeyInit;
+
+    fn new_cipher(key: &[u8]) -> Result<Self::Cipher>;
+
+    fn encrypt(&self, data: &[u8], key: &[u8]) -> Result<Vec<u8>> {
+        encrypt_generic::<Self::Cipher>(data, key)
+    }
+
+    fn decrypt(&self, data: &[u8], key: &[u8]) -> Result<Vec<u8>> {
+        decrypt_generic::<Self::Cipher>(data, key)
+    }
+}
+
+fn encrypt_generic<C: Aead>(data: &[u8], key: &[u8]) -> Result<Vec<u8>>
+where
+    C: KeyInit,
+{
+    let cipher = C::new_from_slice(key).unwrap();
+    let mut nonce = vec![0u8; NONCE_SIZE];
+    OsRng.fill_bytes(&mut nonce);
+    let nonce = GenericArray::from_slice(&nonce);
+    let ciphertext = cipher.encrypt(nonce, data).unwrap();
+    Ok(ciphertext)
+}
+
+fn decrypt_generic<C: Aead>(data: &[u8], key: &[u8]) -> Result<Vec<u8>>
+where
+    C: KeyInit,
+{
+    let cipher = C::new_from_slice(key).unwrap();
+    let (nonce, ciphertext) = data.split_at(NONCE_SIZE);
+    let nonce = GenericArray::from_slice(nonce);
+    let plaintext = cipher.decrypt(nonce, ciphertext).unwrap();
+    Ok(plaintext)
 }

@@ -14,3 +14,6 @@ bincode = "1.3.3"
 log = "0.4.21"
 serde = { version = "1.0.203", features = ["derive"] }
 sled = "0.34.7"
+anyhow = "1.0.44"
+aead = { version = "0.5.2", features = ["alloc"] }
+rand = "0.8.5"

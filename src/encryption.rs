@@ -1,71 +1,116 @@
-use aes_gcm::{aead::Aead, AeadCore, Aes256Gcm, KeyInit, Nonce};
-use chacha20poly1305 as chacha;
-use rand::rngs::OsRng;
+#![allow(unused_imports)]
+use aead::generic_array::GenericArray;
+use anyhow::Result;
+use quickfetch_traits::EncryptionMethod;
 
-#[derive(Debug, Clone, Copy)]
-pub enum EncryptionMethod {
-    AesGcm,
-    Chacha20Poly1305,
+#[cfg(feature = "aes")]
+#[derive(Debug, Copy, Clone)]
+pub struct AESGCM;
+
+#[cfg(feature = "aes")]
+impl EncryptionMethod for AESGCM {
+    type Cipher = aes_gcm::Aes256Gcm;
+
+    fn new_cipher(key: &[u8]) -> Result<Self::Cipher> {
+        use aes_gcm::KeyInit;
+        Ok(Self::Cipher::new(GenericArray::from_slice(key)))
+    }
 }
 
-impl EncryptionMethod {
-    /// Encrypts the data using the provided key and encryption method
-    pub fn encrypt(&self, data: &[u8], key: &[u8]) -> anyhow::Result<Vec<u8>> {
-        match self {
-            EncryptionMethod::AesGcm => {
-                let cipher = Aes256Gcm::new_from_slice(key).unwrap();
-                let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+#[cfg(feature = "chacha20poly")]
+#[derive(Debug, Copy, Clone)]
+pub struct ChaCha20Poly;
 
-                let ciphertext = cipher.encrypt(&nonce, data).unwrap();
+#[cfg(feature = "chacha20poly")]
+impl EncryptionMethod for ChaCha20Poly {
+    type Cipher = chacha20poly1305::ChaCha20Poly1305;
 
-                // Prepend the nonce to the ciphertext
-                let mut encrypted_data = nonce.to_vec();
-                encrypted_data.extend_from_slice(&ciphertext);
-
-                Ok(encrypted_data)
-            }
-            EncryptionMethod::Chacha20Poly1305 => {
-                let cipher = chacha::ChaCha20Poly1305::new_from_slice(key).unwrap();
-                let nonce = chacha::ChaCha20Poly1305::generate_nonce(&mut OsRng);
-
-                let ciphertext = cipher.encrypt(&nonce, data).unwrap();
-
-                let mut encrypted_data = nonce.to_vec();
-                encrypted_data.extend_from_slice(&ciphertext);
-
-                Ok(encrypted_data)
-            }
-        }
+    fn new_cipher(key: &[u8]) -> Result<Self::Cipher> {
+        use chacha20poly1305::KeyInit;
+        Ok(Self::Cipher::new(GenericArray::from_slice(key)))
     }
+}
 
-    /// Decrypts the data using the provided key and encryption method
-    pub fn decrypt(&self, data: &[u8], key: &[u8]) -> anyhow::Result<Vec<u8>> {
-        match self {
-            EncryptionMethod::AesGcm => {
-                let cipher = Aes256Gcm::new_from_slice(key).unwrap();
+#[cfg(feature = "aes-gcm-siv")]
+#[derive(Debug, Copy, Clone)]
+pub struct AESGCMSIV;
 
-                // Split the nonce and ciphertext
-                let (nonce, ciphertext) = data.split_at(data.len() / 2);
+#[cfg(feature = "aes-gcm-siv")]
+impl EncryptionMethod for AESGCMSIV {
+    type Cipher = aes_gcm_siv::Aes256GcmSiv;
 
-                let plaintext = cipher
-                    .decrypt(Nonce::from_slice(nonce), ciphertext)
-                    .unwrap();
+    fn new_cipher(key: &[u8]) -> Result<Self::Cipher> {
+        use aes_gcm_siv::KeyInit;
+        Ok(Self::Cipher::new(GenericArray::from_slice(key)))
+    }
+}
 
-                Ok(plaintext)
-            }
+#[cfg(feature = "aes-siv")]
+#[derive(Debug, Copy, Clone)]
+pub struct AESSIV;
 
-            EncryptionMethod::Chacha20Poly1305 => {
-                let cipher = chacha::ChaCha20Poly1305::new_from_slice(key).unwrap();
+#[cfg(feature = "aes-siv")]
+impl EncryptionMethod for AESSIV {
+    type Cipher = aes_siv::Aes256SivAead;
 
-                // Split the nonce and ciphertext
-                let (nonce, ciphertext) = data.split_at(data.len() / 2);
+    fn new_cipher(key: &[u8]) -> Result<Self::Cipher> {
+        use aes_siv::KeyInit;
+        Ok(Self::Cipher::new(GenericArray::from_slice(key)))
+    }
+}
 
-                let plaintext = cipher
-                    .decrypt(Nonce::from_slice(nonce), ciphertext)
-                    .unwrap();
+#[cfg(feature = "ascon-aead")]
+#[derive(Debug, Copy, Clone)]
+pub struct Ascon;
 
-                Ok(plaintext)
-            }
-        }
+#[cfg(feature = "ascon-aead")]
+impl EncryptionMethod for Ascon {
+    type Cipher = ascon_aead::Ascon128;
+
+    fn new_cipher(key: &[u8]) -> Result<Self::Cipher> {
+        use aead::KeyInit;
+        Ok(Self::Cipher::new(GenericArray::from_slice(key)))
+    }
+}
+
+#[cfg(feature = "ccm")]
+#[derive(Debug, Copy, Clone)]
+pub struct CCM;
+
+#[cfg(feature = "ccm")]
+impl EncryptionMethod for CCM {
+    type Cipher = ccm::Ccm<aes::Aes256, ccm::consts::U10, ccm::consts::U13>;
+
+    fn new_cipher(key: &[u8]) -> Result<Self::Cipher> {
+        use aead::KeyInit;
+        Ok(Self::Cipher::new(GenericArray::from_slice(key)))
+    }
+}
+
+#[cfg(feature = "deoxys")]
+#[derive(Debug, Copy, Clone)]
+pub struct Deoxys;
+
+#[cfg(feature = "deoxys")]
+impl EncryptionMethod for Deoxys {
+    type Cipher = deoxys::DeoxysII256;
+
+    fn new_cipher(key: &[u8]) -> Result<Self::Cipher> {
+        use aead::KeyInit;
+        Ok(Self::Cipher::new(GenericArray::from_slice(key)))
+    }
+}
+
+#[cfg(feature = "eax")]
+#[derive(Debug, Copy, Clone)]
+pub struct EAX;
+
+#[cfg(feature = "eax")]
+impl EncryptionMethod for EAX {
+    type Cipher = eax::Eax<aes::Aes256>;
+
+    fn new_cipher(key: &[u8]) -> Result<Self::Cipher> {
+        use aead::KeyInit;
+        Ok(Self::Cipher::new(GenericArray::from_slice(key)))
     }
 }

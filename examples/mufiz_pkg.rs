@@ -1,6 +1,7 @@
 #![allow(unused_imports)]
 use std::path::PathBuf;
 
+use quickfetch::encryption::AESGCM;
 use quickfetch::package::SimplePackage;
 use quickfetch::Fetcher;
 use quickfetch::{pretty_env_logger, FetchMethod};
@@ -10,8 +11,13 @@ async fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
     let config_path = "examples/watch.toml";
 
-    let mut fetcher: Fetcher<SimplePackage> =
-        Fetcher::new(config_path, quickfetch::package::Mode::Toml, "mufiz").await?;
+    let mut fetcher: Fetcher<SimplePackage, AESGCM> = Fetcher::new(
+        config_path,
+        quickfetch::package::Mode::Toml,
+        "mufiz",
+        AESGCM,
+    )
+    .await?;
     // To enable progress bar for fetching
     // fetcher.set_notify_method(quickfetch::NotifyMethod::ProgressBar);
     // Set the response method to BytesStream or Chunk for progress bars
