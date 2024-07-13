@@ -1,18 +1,28 @@
+#![allow(unused_imports)]
 use std::path::PathBuf;
 
-use quickfetch::package::{Config, SimplePackage};
+use quickfetch::package::SimplePackage;
 use quickfetch::Fetcher;
 use quickfetch::{pretty_env_logger, FetchMethod};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
-    let config: Config<SimplePackage> = Config::from_toml_file("examples/pkgs.toml").await?;
+    let config_path = "examples/watch.toml";
 
-    let mut fetcher: Fetcher<SimplePackage> = Fetcher::new(config.packages(), "mufiz")?;
-    fetcher.set_notify_method(quickfetch::NotifyMethod::ProgressBar);
-    fetcher.set_response_method(quickfetch::ResponseMethod::BytesStream);
-    fetcher.fetch(FetchMethod::Concurrent).await?;
-    fetcher.write_all(PathBuf::from("pkgs")).await?;
+    let mut fetcher: Fetcher<SimplePackage> =
+        Fetcher::new(config_path, quickfetch::package::Mode::Toml, "mufiz").await?;
+    // To enable progress bar for fetching
+    // fetcher.set_notify_method(quickfetch::NotifyMethod::ProgressBar);
+    // Set the response method to BytesStream or Chunk for progress bars
+    // fetcher.set_response_method(quickfetch::ResponseMethod::BytesStream);
+    // Fetch the packages concurrently
+    // fetcher.fetch(FetchMethod::Concurrent).await?;
+    // Write the fetched packages to a directory
+    // fetcher.write_all(PathBuf::from("pkgs")).await?;
+
+    // To enable watching
+    fetcher.watching().await;
+
     Ok(())
 }

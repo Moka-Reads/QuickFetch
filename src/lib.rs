@@ -1,8 +1,6 @@
 #![doc = include_str!("../README.md")]
-use sled::IVec;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+#[macro_use]
+extern crate log;
 
 use anyhow::Result;
 pub use bincode;
@@ -11,13 +9,21 @@ use encryption::EncryptionMethod;
 use futures::future::join_all;
 use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use kanal::bounded_async as channel;
+use kanal::bounded_async;
+use notify::{Config as NConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use package::{Config, Mode};
 pub use pretty_env_logger;
 pub use quickfetch_traits as traits;
 use quickfetch_traits::{Entry, EntryKey, EntryValue};
 use reqwest::{Client, Response};
+use serde::Deserialize;
 use sled::Db;
+use sled::IVec;
+use std::ops::Deref;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::fs::create_dir;
+use tokio::sync::mpsc::{channel, Receiver};
 use tokio::sync::Semaphore;
 use url::Url;
 /// Provides different types of encryption methods that can be used
@@ -26,9 +32,6 @@ pub mod encryption;
 pub mod key_val;
 /// Provides different types of packages that can be used
 pub mod package;
-#[cfg(feature = "unstable")]
-/// Provides a Fetcher-like struct that can be used to fetch packages while watching a config file
-pub mod watcher;
 
 /// Returns the path to the home directory with the sub directory appended
 pub fn home_plus<P: AsRef<Path>>(sub_dir: P) -> PathBuf {
@@ -92,6 +95,9 @@ impl Default for ResponseMethod {
 #[derive(Debug, Clone)]
 pub struct Fetcher<E: Entry> {
     entries: Arc<Vec<E>>,
+    config_path: PathBuf,
+    config: Config<E>,
+    config_type: Mode,
     db: Db,
     db_path: PathBuf,
     client: Client,
@@ -102,17 +108,27 @@ pub struct Fetcher<E: Entry> {
 }
 
 // Constructor and Setup Methods
-impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
+impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetcher<E> {
     /// Create a new `Fetcher` instance with list of urls and db path
-    pub fn new<P: AsRef<Path>>(entries: &[E], db_path: P) -> Result<Self> {
+    pub async fn new<P: AsRef<Path> + Send + Sync>(
+        config_path: P,
+        config_type: Mode,
+        db_path: P,
+    ) -> Result<Self> {
         let client = Client::builder()
             .brotli(true) // by default enable brotli compression
             .build()?;
 
+        let config = Config::from_file(&config_path, config_type).await?;
+        let entries = config.packages_owned();
+
         Ok(Self {
-            entries: Arc::new(entries.to_vec()),
+            entries: Arc::new(entries),
             db: sled::open(&db_path)?,
             db_path: PathBuf::from(db_path.as_ref()),
+            config,
+            config_path: config_path.as_ref().to_path_buf(),
+            config_type,
             client,
             response_method: ResponseMethod::default(),
             encryption_method: None,
@@ -210,7 +226,7 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
 }
 
 // Handles and Fetching Entries
-impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
+impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetcher<E> {
     async fn resp_bytes(&self, response: Response, name: String) -> Result<Bytes> {
         let len = response.content_length().unwrap_or(0);
         let style = ProgressStyle::default_bar()
@@ -255,6 +271,62 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
                 Ok(bytes.freeze())
             }
         }
+    }
+
+    /// Enables to fetch packages in a watching state from a config file
+    /// The config file is watched for changes and the packages are fetched
+    ///
+    /// The fetching method is `concurrent` and the notification method is `log`
+    pub async fn watching(&mut self) {
+        println!("Watching {}", &self.config_path.display());
+        if let Err(e) = self.watch().await {
+            error!("Error: {:?}", e)
+        }
+    }
+
+    async fn watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<Event>>)> {
+        let (tx, rx) = channel(1);
+
+        let watcher = RecommendedWatcher::new(
+            move |res| {
+                futures::executor::block_on(async {
+                    tx.send(res).await.unwrap();
+                })
+            },
+            NConfig::default(),
+        )?;
+
+        Ok((watcher, rx))
+    }
+
+    async fn watch(&mut self) -> notify::Result<()> {
+        let (mut watcher, mut rx) = Self::watcher().await?;
+        watcher.watch(&self.config_path, RecursiveMode::Recursive)?;
+
+        while let Some(res) = rx.recv().await {
+            match res {
+                Ok(event) => self.handle_event(event).await.expect("Event handle error"),
+                Err(e) => error!("Watch error: {:?}", e),
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_event(&mut self, event: Event) -> anyhow::Result<()> {
+        info!("Event: {:?}", event.kind);
+        match event.kind {
+            EventKind::Modify(_) => {
+                self.config = Config::from_file(&self.config_path, self.config_type).await?;
+                self.concurrent_fetch().await?;
+            }
+            EventKind::Remove(_) => {
+                info!("Removed {}", &self.config_path.display());
+                info!("Clearing DB");
+                self.db.clear().unwrap();
+            }
+            _ => debug!("Other event type"),
+        }
+        Ok(())
     }
 
     fn encrypt_bytes(&self, bytes: &[u8], key: &[u8]) -> Result<Vec<u8>> {
@@ -305,7 +377,7 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     /// Benefits of multiple entries since we use `recv_many` to receive all the entries at once
     pub async fn channel_fetch(&self) -> Result<()> {
         let len = self.entries.len();
-        let (tx, rx) = channel(len);
+        let (tx, rx) = bounded_async(len);
         let self_clone = self.clone();
         let semaphore = Arc::new(Semaphore::new(len)); // Adjust the concurrency limit as needed
 

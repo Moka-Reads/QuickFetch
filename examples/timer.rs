@@ -1,15 +1,16 @@
 use std::time::Instant;
 
-use quickfetch::package::{Config, SimplePackage};
+use quickfetch::package::Mode;
+use quickfetch::package::SimplePackage;
 use quickfetch::Fetcher;
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     quickfetch::pretty_env_logger::init();
-    let config: Config<SimplePackage> = Config::from_toml_file("examples/pkgs.toml").await?;
+    let config_path = "examples/pkgs.toml";
+    let mode = Mode::Toml;
 
-    let mut fetcher1 = Fetcher::new(config.packages(), "timer_1")?;
-    let fetcher2 = Fetcher::new(config.packages(), "timer_2")?;
+    let mut fetcher1: Fetcher<SimplePackage> = Fetcher::new(config_path, mode, "timer_1").await?;
+    let fetcher2: Fetcher<SimplePackage> = Fetcher::new(config_path, mode, "timer_2").await?;
 
     let start = Instant::now();
     fetcher1.concurrent_fetch().await?;
