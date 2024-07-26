@@ -1,6 +1,5 @@
 use std::time::Instant;
 
-use quickfetch::encryption::AESGCM;
 use quickfetch::package::Mode;
 use quickfetch::package::SimplePackage;
 use quickfetch::Fetcher;
@@ -10,10 +9,8 @@ async fn main() -> anyhow::Result<()> {
     let config_path = "examples/pkgs.toml";
     let mode = Mode::Toml;
 
-    let mut fetcher1: Fetcher<SimplePackage, AESGCM> =
-        Fetcher::new(config_path, mode, "timer_1", AESGCM).await?;
-    let fetcher2: Fetcher<SimplePackage, AESGCM> =
-        Fetcher::new(config_path, mode, "timer_2", AESGCM).await?;
+    let mut fetcher1: Fetcher<SimplePackage> = Fetcher::new(config_path, mode, "timer_1").await?;
+    let fetcher2: Fetcher<SimplePackage> = Fetcher::new(config_path, mode, "timer_2").await?;
 
     let start = Instant::now();
     fetcher1.concurrent_fetch().await?;

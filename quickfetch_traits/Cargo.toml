@@ -1,7 +1,7 @@
 [package]
 name = "quickfetch_traits"
 description = "Traits for quickfetch"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 authors = ["Mustafif Khan", "Moka-Reads"]
@@ -15,5 +15,3 @@ log = "0.4.21"
 serde = { version = "1.0.203", features = ["derive"] }
 sled = "0.34.7"
 anyhow = "1.0.44"
-aead = { version = "0.5.2", features = ["alloc"] }
-rand = "0.8.5"

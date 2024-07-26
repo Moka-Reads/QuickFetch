@@ -13,20 +13,17 @@ use notify::{Config as NConfig, Event, EventKind, RecommendedWatcher, RecursiveM
 use package::{Config, Mode};
 pub use pretty_env_logger;
 pub use quickfetch_traits as traits;
-use quickfetch_traits::{EncryptionMethod, Entry, EntryKey, EntryValue};
+use quickfetch_traits::{Entry, EntryKey, EntryValue};
 use reqwest::{Client, Response};
 use serde::Deserialize;
 use sled::Db;
-use sled::IVec;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs::create_dir;
 use tokio::sync::mpsc::{channel, Receiver};
 use tokio::sync::Semaphore;
 use url::Url;
-/// Provides different types of encryption methods that can be used
-pub mod encryption;
+
 /// Provides structures that can be used as a Key and Value for Fetcher
 pub mod key_val;
 /// Provides different types of packages that can be used
@@ -103,7 +100,7 @@ impl Default for ResponseMethod {
 /// - `response_method`: Method of fetching the response
 /// - `encryption_method`: Method of encrypting and decrypting the response
 #[derive(Debug, Clone)]
-pub struct Fetcher<E: Entry, K: EncryptionMethod> {
+pub struct Fetcher<E: Entry> {
     entries: Arc<Vec<E>>,
     config_path: PathBuf,
     config: Config<E>,
@@ -112,21 +109,17 @@ pub struct Fetcher<E: Entry, K: EncryptionMethod> {
     db_path: PathBuf,
     client: Client,
     response_method: ResponseMethod,
-    encryption_method: K,
     notify_method: NotifyMethod,
     multi_pb: Arc<MultiProgress>,
 }
 
 // Constructor and Setup Methods
-impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>, K: EncryptionMethod>
-    Fetcher<E, K>
-{
+impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetcher<E> {
     /// Create a new `Fetcher` instance with list of urls and db path
     pub async fn new<P: AsRef<Path> + Send + Sync>(
         config_path: P,
         config_type: Mode,
         db_path: P,
-        encryption_method: K,
     ) -> Result<Self> {
         let client = Client::builder()
             .brotli(true) // by default enable brotli compression
@@ -144,7 +137,6 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>, K: En
             config_type,
             client,
             response_method: ResponseMethod::default(),
-            encryption_method,
             notify_method: NotifyMethod::Log,
             multi_pb: Arc::new(MultiProgress::new()),
         })
@@ -156,12 +148,6 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>, K: En
     /// when using `Client::builder()`
     pub fn set_client(&mut self, client: Client) {
         self.client = client;
-    }
-
-    /// Set the encryption method to be used for encrypting and decrypting the response data
-    /// By default `self.encryption_method = None`
-    pub fn set_encryption_method(&mut self, encryption_method: K) {
-        self.encryption_method = encryption_method
     }
 
     /// Set the response method to be used for fetching the response
@@ -192,7 +178,7 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>, K: En
 }
 
 // Database Operations
-impl<E: Entry + Clone + Send + Sync + 'static, K: EncryptionMethod> Fetcher<E, K> {
+impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
     /// Removes the `db` directory (use with caution as this uses `tokio::fs::remove_dir_all`)
     pub async fn remove_db_dir(&self) -> Result<()> {
         tokio::fs::remove_dir_all(&self.db_path).await?;
@@ -239,14 +225,10 @@ impl<E: Entry + Clone + Send + Sync + 'static, K: EncryptionMethod> Fetcher<E, K
 }
 
 // Handles and Fetching Entries
-impl<
-        E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>,
-        P: EncryptionMethod + Send + Sync + Copy + Clone + 'static,
-    > Fetcher<E, P>
-{
+impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetcher<E> {
     async fn resp_bytes(&self, response: Response, name: String) -> Result<Bytes> {
         let len = response.content_length().unwrap_or(0);
-        let style = ProgressStyle::default_bar()
+        let style = ProgressStyle::default_spinner()
             .template("[{msg}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
             .unwrap()
             .progress_chars("#>-");
@@ -263,11 +245,13 @@ impl<
                 let pb = self.multi_pb.add(ProgressBar::new(len));
                 pb.set_style(style.clone());
                 pb.set_message(name.clone());
+                let mut downloaded: u64 = 0;
 
                 while let Some(item) = stream.next().await {
                     let b = item?;
+                    downloaded += b.len() as u64;
                     bytes.extend_from_slice(&b);
-                    pb.inc(b.len() as u64);
+                    pb.set_position(downloaded);
                 }
                 pb.finish();
 
@@ -280,9 +264,11 @@ impl<
                 let pb = self.multi_pb.add(ProgressBar::new(len));
                 pb.set_style(style.clone());
                 pb.set_message(name.clone());
+                let mut downloaded: u64 = 0;
                 while let Some(chunk) = response.chunk().await? {
+                    downloaded += chunk.len() as u64;
                     bytes.extend_from_slice(&chunk);
-                    pb.inc(chunk.len() as u64);
+                    pb.set_position(downloaded);
                 }
                 pb.finish();
                 Ok(bytes.freeze())
@@ -347,11 +333,6 @@ impl<
         Ok(())
     }
 
-    fn encrypt_bytes(&self, bytes: &[u8], key: &[u8]) -> Result<Vec<u8>> {
-        let bytes = self.encryption_method.encrypt(bytes.as_ref(), key)?;
-        Ok(bytes)
-    }
-
     async fn handle_entry_channel(&self, entry: E, bytes: Option<Bytes>) -> Result<()> {
         let key = entry.key();
         let mut value = entry.value();
@@ -363,7 +344,7 @@ impl<
             if self.notify_method == NotifyMethod::Log {
                 key.log_caching();
             }
-            let bytes = self.encrypt_bytes(bytes.as_ref(), key_bytes.as_ref())?;
+
             value.set_response(bytes.as_ref());
             let _ = self.db.insert(key.bytes(), value.bytes())?;
         } else if let Some(curr_val) = self.db.get(&key_bytes)? {
@@ -375,7 +356,7 @@ impl<
                 }
                 let response = self.client.get(value.url()).send().await?;
                 let bytes = self.resp_bytes(response, key.to_string()).await?;
-                value.set_response(&self.encrypt_bytes(bytes.as_ref(), &key.bytes()).unwrap());
+                value.set_response(bytes.as_ref());
                 let _ =
                     self.db
                         .compare_and_swap(key.bytes(), Some(cv_bytes), Some(value.bytes()))?;
@@ -450,7 +431,7 @@ impl<
                 }
                 let response = self.client.get(value.url()).send().await?;
                 let bytes = self.resp_bytes(response, key.to_string()).await?;
-                value.set_response(&self.encrypt_bytes(bytes.as_ref(), &key.bytes()).unwrap());
+                value.set_response(&bytes);
                 let _ =
                     self.db
                         .compare_and_swap(key.bytes(), Some(cv_bytes), Some(value.bytes()))?;
@@ -463,7 +444,7 @@ impl<
             }
             let response = self.client.get(value.url()).send().await?;
             let bytes = self.resp_bytes(response, key.to_string()).await?;
-            value.set_response(&self.encrypt_bytes(bytes.as_ref(), &key.bytes()).unwrap());
+            value.set_response(bytes.as_ref());
             let _ = self.db.insert(key.bytes(), value.bytes())?;
         }
         Ok(())
@@ -493,19 +474,14 @@ impl<
         Ok(())
     }
 
-    fn dec(encryption_method: P, value: &[u8], key: &[u8]) -> Result<Vec<u8>> {
-        encryption_method.decrypt(value, key)
-    }
-
-    /// Fetches and stores all results from the db
+    /// Returns all entries in the db as a vector of key-value pairs
     pub fn pairs<K: EntryKey, V: EntryValue>(&self) -> Result<Vec<(K, V)>> {
         self.db
             .iter()
             .map(|x| {
                 let (key_iv, value_iv) = x.unwrap();
                 let key = K::from_ivec(key_iv);
-                let bytes = Self::dec(self.encryption_method, value_iv.as_ref(), &key.bytes())?;
-                Ok((key, V::from_ivec(IVec::from(bytes))))
+                Ok((key, V::from_ivec(value_iv)))
             })
             .collect()
     }
@@ -513,8 +489,8 @@ impl<
     /// Gets an entry from the db by key
     pub fn get<K: EntryKey, V: EntryValue>(&self, key: K) -> Result<Option<V>> {
         if let Some(value_iv) = self.db.get(key.bytes())? {
-            let bytes = Self::dec(self.encryption_method, value_iv.as_ref(), &key.bytes())?;
-            Ok(Some(V::from_ivec(IVec::from(bytes))))
+            let value = V::from_ivec(value_iv);
+            Ok(Some(value))
         } else {
             Ok(None)
         }
@@ -546,8 +522,8 @@ impl<
 
         for entry in (*self.entries).clone() {
             let key = entry.key();
-            let ivec = self.db.get(key.bytes())?.unwrap();
-            let value = E::Value::from_ivec(ivec);
+            let value_vec = self.db.get(key.bytes())?.unwrap().to_vec();
+            let value: E::Value = E::Value::from_bytes(&value_vec);
             let resp = value.response();
             let file_name = Url::parse(&value.url())?
                 .path_segments()
@@ -560,7 +536,7 @@ impl<
                 create_dir(&dir).await?;
             }
 
-            let bytes = Self::dec(self.encryption_method, resp.deref(), &key.bytes())?;
+            let bytes = resp.to_vec();
             tasks.push(tokio::spawn(
                 async move { tokio::fs::write(path, bytes).await },
             ))
