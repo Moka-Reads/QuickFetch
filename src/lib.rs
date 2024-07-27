@@ -1,19 +1,18 @@
 #![doc = include_str!("../README.md")]
 #[macro_use]
 extern crate log;
-
 use anyhow::Result;
 pub use bincode;
 use bytes::Bytes;
 use futures::future::join_all;
 use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use kanal::bounded_async;
 use notify::{Config as NConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use package::{Config, Mode};
 pub use pretty_env_logger;
 pub use quickfetch_traits as traits;
 use quickfetch_traits::{Entry, EntryKey, EntryValue};
+use rayon::prelude::*;
 use reqwest::{Client, Response};
 use serde::Deserialize;
 use sled::Db;
@@ -21,13 +20,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs::create_dir;
 use tokio::sync::mpsc::{channel, Receiver};
-use tokio::sync::Semaphore;
+use tokio::sync::Mutex;
 use url::Url;
-
-/// Provides structures that can be used as a Key and Value for Fetcher
-pub mod key_val;
 /// Provides different types of packages that can be used
 pub mod package;
+/// Provides structures that can be used as a Key and Value for Fetcher
+pub mod val;
+
+/// Provides all the common types to use with Fetcher
+pub mod prelude {
+    pub use crate::package::{Config, GHPackage, Mode, SimplePackage};
+    pub use crate::traits::{Entry, EntryKey, EntryValue};
+    pub use crate::val::{GHValue, SimpleValue};
+    pub use crate::Fetcher;
+}
 
 /// Returns the path to the home directory with the sub directory appended
 pub fn home_plus<P: AsRef<Path>>(sub_dir: P) -> PathBuf {
@@ -76,7 +82,7 @@ impl Default for NotifyMethod {
 #[derive(Debug, Copy, Clone)]
 pub enum FetchMethod {
     Concurrent,
-    Channel,
+    Sync,
     Watch,
 }
 
@@ -101,15 +107,25 @@ impl Default for ResponseMethod {
 /// - `encryption_method`: Method of encrypting and decrypting the response
 #[derive(Debug, Clone)]
 pub struct Fetcher<E: Entry> {
+    /// List of entries to fetch
     entries: Arc<Vec<E>>,
+    /// Path to the config file
     config_path: PathBuf,
+    /// Config struct to hold the configuration
     config: Config<E>,
+    /// Type of config file (json or toml)
     config_type: Mode,
+    /// sled db to cache the fetched data
     db: Db,
+    /// Path to the db file
     db_path: PathBuf,
+    /// reqwest client to fetch the data
     client: Client,
+    /// Method of fetching the response
     response_method: ResponseMethod,
+    /// Method of notifying the user
     notify_method: NotifyMethod,
+    /// Multi progress bar to show multiple progress bars
     multi_pb: Arc<MultiProgress>,
 }
 
@@ -122,7 +138,7 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
         db_path: P,
     ) -> Result<Self> {
         let client = Client::builder()
-            .brotli(true) // by default enable brotli compression
+            .brotli(true) // by default enable brotli decompression
             .build()?;
 
         let config = Config::from_file(&config_path, config_type).await?;
@@ -333,91 +349,6 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
         Ok(())
     }
 
-    async fn handle_entry_channel(&self, entry: E, bytes: Option<Bytes>) -> Result<()> {
-        let key = entry.key();
-        let mut value = entry.value();
-
-        let key_bytes = key.bytes();
-
-        // key doesn't exist in the db
-        if let Some(bytes) = bytes {
-            if self.notify_method == NotifyMethod::Log {
-                key.log_caching();
-            }
-
-            value.set_response(bytes.as_ref());
-            let _ = self.db.insert(key.bytes(), value.bytes())?;
-        } else if let Some(curr_val) = self.db.get(&key_bytes)? {
-            let cv_bytes = curr_val.to_vec();
-            let cv = E::Value::from_ivec(curr_val);
-            if !value.is_same(&cv) {
-                if self.notify_method == NotifyMethod::Log {
-                    key.log_caching();
-                }
-                let response = self.client.get(value.url()).send().await?;
-                let bytes = self.resp_bytes(response, key.to_string()).await?;
-                value.set_response(bytes.as_ref());
-                let _ =
-                    self.db
-                        .compare_and_swap(key.bytes(), Some(cv_bytes), Some(value.bytes()))?;
-            } else if self.notify_method == NotifyMethod::Log {
-                key.log_cache();
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Fetches and stores all results to the db using a bounded multi-producer single-consumer channel
-    /// Benefits of multiple entries since we use `recv_many` to receive all the entries at once
-    pub async fn channel_fetch(&self) -> Result<()> {
-        let len = self.entries.len();
-        let (tx, rx) = bounded_async(len);
-        let self_clone = self.clone();
-        let semaphore = Arc::new(Semaphore::new(len)); // Adjust the concurrency limit as needed
-
-        // Use a stream to process entries concurrently
-        let entries = self_clone.entries.clone();
-        let entries_stream = futures::stream::iter(<Vec<E> as Clone>::clone(&entries).into_iter())
-            .for_each_concurrent(None, move |entry| {
-                let tx = tx.clone();
-                let self_clone = self_clone.clone();
-                let semaphore = semaphore.clone();
-
-                async move {
-                    let _permit = semaphore.acquire().await.unwrap(); // Acquire a semaphore permit
-
-                    let mut bytes: Option<Bytes> = None;
-                    if !self_clone.db.contains_key(entry.key().bytes()).unwrap() {
-                        let response = self_clone
-                            .client
-                            .get(entry.value().url())
-                            .send()
-                            .await
-                            .unwrap();
-                        bytes = Some(
-                            self_clone
-                                .resp_bytes(response, entry.key().to_string())
-                                .await
-                                .unwrap(),
-                        );
-                    }
-                    tx.send((entry.clone(), bytes)).await.unwrap();
-                }
-            });
-
-        // Await the completion of the stream
-        tokio::spawn(entries_stream).await?;
-
-        rx.stream()
-            .for_each(|(entry, bytes)| async {
-                self.handle_entry_channel(entry, bytes).await.unwrap();
-            })
-            .await;
-
-        Ok(())
-    }
-
     async fn handle_entry_conc(&self, entry: E) -> Result<()> {
         let key = entry.key();
         let mut value = entry.value();
@@ -450,6 +381,11 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
         Ok(())
     }
 
+    fn handle_entry_sync(&self, entry: E) -> Result<()> {
+        futures::executor::block_on(self.handle_entry_conc(entry))?;
+        Ok(())
+    }
+
     /// Fetches and stores all results to the db
     pub async fn concurrent_fetch(&mut self) -> Result<()> {
         let mut tasks = Vec::new();
@@ -465,11 +401,28 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
         Ok(())
     }
 
+    /// Fetches and stores all results to the db synchronously and in parallel
+    pub fn sync_fetch(&mut self) -> Result<()> {
+        let entries = self.entries.clone();
+
+        let results: Vec<Result<()>> = entries
+            .par_iter()
+            .map(|entry| self.handle_entry_sync(entry.clone()))
+            .collect();
+
+        results.into_iter().try_for_each(|x| x)?;
+
+        Ok(())
+    }
+
     pub async fn fetch(&mut self, method: FetchMethod) -> Result<()> {
         match method {
             FetchMethod::Concurrent => self.concurrent_fetch().await?,
-            FetchMethod::Channel => self.channel_fetch().await?,
             FetchMethod::Watch => self.watching().await,
+            FetchMethod::Sync => {
+                println!("Please use sync_fetch() for synchronous operations.")
+                // Honestly not sure how you would get here but here's a message I guess
+            }
         }
         Ok(())
     }
@@ -518,8 +471,16 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
 
     /// Writes all the fetched data to the specified directory
     pub async fn write_all(&self, dir: PathBuf) -> Result<()> {
-        let mut tasks = Vec::new();
+        let total_entries = self.entries.len();
+        let progress_bar = Arc::new(Mutex::new(ProgressBar::new(total_entries as u64)));
+        progress_bar.lock().await.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} {wide_msg}")
+                .unwrap()
+                .progress_chars("##-"),
+        );
 
+        let mut tasks = Vec::new();
         for entry in (*self.entries).clone() {
             let key = entry.key();
             let value_vec = self.db.get(key.bytes())?.unwrap().to_vec();
@@ -531,18 +492,30 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
                 .last()
                 .unwrap()
                 .to_string();
-            let path = dir.join(file_name);
+            let path = dir.join(&file_name);
             if !dir.exists() {
                 create_dir(&dir).await?;
             }
-
             let bytes = resp.to_vec();
-            tasks.push(tokio::spawn(
-                async move { tokio::fs::write(path, bytes).await },
-            ))
+            let pb_clone = Arc::clone(&progress_bar);
+            tasks.push(tokio::spawn(async move {
+                pb_clone
+                    .lock()
+                    .await
+                    .set_message(format!("Writing: {}", file_name));
+                let result = tokio::fs::write(&path, bytes).await;
+                pb_clone.lock().await.inc(1);
+                result
+            }));
         }
 
-        join_all(tasks).await.into_iter().try_for_each(|x| x?)?;
+        let results = join_all(tasks).await;
+        progress_bar
+            .lock()
+            .await
+            .finish_with_message("All files written");
+
+        results.into_iter().try_for_each(|x| x?)?;
         Ok(())
     }
 }

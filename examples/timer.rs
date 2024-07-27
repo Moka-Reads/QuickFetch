@@ -10,7 +10,7 @@ async fn main() -> anyhow::Result<()> {
     let mode = Mode::Toml;
 
     let mut fetcher1: Fetcher<SimplePackage> = Fetcher::new(config_path, mode, "timer_1").await?;
-    let fetcher2: Fetcher<SimplePackage> = Fetcher::new(config_path, mode, "timer_2").await?;
+    let mut fetcher2: Fetcher<SimplePackage> = Fetcher::new(config_path, mode, "timer_2").await?;
 
     let start = Instant::now();
     fetcher1.concurrent_fetch().await?;
@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Time elapsed for fetcher1: {:?}", duration);
 
     let start = Instant::now();
-    fetcher2.channel_fetch().await?;
+    fetcher2.sync_fetch()?;
     let duration = start.elapsed();
     println!("Time elapsed for fetcher2: {:?}", duration);
 

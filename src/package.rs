@@ -1,10 +1,9 @@
 use quickfetch_traits::Entry;
-use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::fs::read_to_string;
 
-use crate::key_val::{GHValue, SimpleValue};
+use crate::val::{GHValue, SimpleValue};
 /// A Minimal Package Implementation
 ///
 /// This module provides a minimal package implementation
@@ -72,7 +71,7 @@ impl Entry for GHPackage {
 /// A Minimal Config Implementation
 ///
 /// The Config struct is used to store a list of Packages (generically PK).
-/// We provide methods of reading from both JSON and TOML files, that also verify correct semantic versioning.
+/// We provide methods of reading from both JSON and TOML files
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config<PK> {
     packages: Vec<PK>,
@@ -82,13 +81,6 @@ pub struct Config<PK> {
 pub enum Mode {
     Json,
     Toml,
-}
-
-#[allow(dead_code)]
-impl SimplePackage {
-    pub fn verify_valid_version(&self) -> bool {
-        Version::parse(&self.version).is_ok()
-    }
 }
 
 #[allow(dead_code)]
