@@ -12,59 +12,28 @@ This library is built to handle multiple requests within a `Client` (`reqwest` c
 The goal is to be a one-stop shop for handling local package manager development to handle multiple
 packages with a local cache to easily update, get and remove the different responses.
 
+## Customize your Approach
 
-## Usage
+We allow for different kinds of customizations on how you interact with QuickFetch, such as how you're notified,
+how you choose to handle the response, and how you'd like to fetch.
 
-```rust
-// examples/mufiz_pkg.rs
-use std::path::PathBuf;
+### Notify Methods
 
-use quickfetch::encryption::AESGCM;
-use quickfetch::package::SimplePackage;
-use quickfetch::Fetcher;
-use quickfetch::{pretty_env_logger, FetchMethod};
+- `NotifyMethod::Log` - Logs the response to the console
+- `NotifyMethod::ProgressBar`- A multiprogress bar
+- `NotifyMethod::Silent`- No notifications
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    pretty_env_logger::init();
-    let config_path = "examples/watch.toml";
+### Response Methods
 
-    let mut fetcher: Fetcher<SimplePackage, AESGCM> = Fetcher::new(
-        config_path,
-        quickfetch::package::Mode::Toml,
-        "mufiz",
-        AESGCM,
-    )
-    .await?;
-    // To enable progress bar for fetching
-    // fetcher.set_notify_method(quickfetch::NotifyMethod::ProgressBar);
-    // Set the response method to BytesStream or Chunk for progress bars
-    // fetcher.set_response_method(quickfetch::ResponseMethod::BytesStream);
-    // Fetch the packages concurrently
-    // fetcher.fetch(FetchMethod::Concurrent).await?;
-    // Write the fetched packages to a directory
-    // fetcher.write_all(PathBuf::from("pkgs")).await?;
+- `ResponseMethod::Bytes`- Takes in the full response
+- `ResponseMethod::Chunks`- Takes in the response in chunks
+- `ResponseMethod::BytesStream`- Takes in the response as a stream
 
-    // To enable watching
-    fetcher.watching().await;
+### Fetch Methods
 
-    Ok(())
-}
-```
-
-## Encryption Methods Available
-
-All of these types are unit structs that can be found in the
-`quickfetch::encryption` module.
-
-- `AESGCM`:  AES GCM encryption method (default under the `aes` feature)
-- `ChaCha20Poly` : ChaCha20 Poly1305 encryption method (under the `chacha20poly` feature)
-- `AESGCMSIV`:  AES GCM SIV encryption method (under the `aes-gcm-siv` feature)
-- `AESSIV` : AES SIV encryption method (under the `aes-siv` feature)
-- `Ascon` : Ascon encryption method (under the `ascon-aead` feature)
-- `CCM`: CCM encryption method (under the `ccm` feature)
-- `Deoxys` : Deoxys encryption method (under the `deoxys` feature)
-- `EAX` : EAX encryption method (under the `eax` feature)
+- `FetchMethod::Async`- Fetches asynchronously
+- `FetchMethod::Sync`- Fetches synchronously
+- `FetchMethod::Watch`- Fetches by watching for modification on the config file asynchrously
 
 ## License
 

@@ -22,7 +22,7 @@ anyhow = "1.0.86"
 futures = "0.3.30"
 reqwest = { version = "0.12.5", features = ["brotli", "stream", "blocking"] }
 sled = "0.34.7"
-tokio = { version = "1.39.1", features = ["full"] }
+tokio = { version = "1.40", features = ["full"] }
 url = "2.5.0"
 serde = { version = "1.0.203", features = ["derive"] }
 log = "0.4.21"
@@ -34,7 +34,7 @@ toml = "0.8.14"
 bytes = "1.6.0"
 quickfetch_traits = { path = "quickfetch_traits", version = "0.3" }
 indicatif = { version = "0.17.8", features = ["futures"] }
-notify = { version = "6.1" }
+notify = "6.1"
 rayon = "1.10.0"
 
 [profile.release]

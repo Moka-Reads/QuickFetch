@@ -12,7 +12,6 @@ use package::{Config, Mode};
 pub use pretty_env_logger;
 pub use quickfetch_traits as traits;
 use quickfetch_traits::{Entry, EntryKey, EntryValue};
-use rayon::prelude::*;
 use reqwest::{Client, Response};
 use serde::Deserialize;
 use sled::Db;
@@ -77,18 +76,19 @@ impl Default for NotifyMethod {
 
 /// `FetchMethod` enum to specify the method of fetching the response
 ///
-/// - `Concurrent`: Fetch the response concurrently using `tokio::spawn`
+/// - `Async`: Fetch the response asynchronously using `tokio::spawn`
 /// - `Channel`: Fetch the response using a bounded multi-producer single-consumer channel
 #[derive(Debug, Copy, Clone)]
 pub enum FetchMethod {
-    Concurrent,
-    Sync,
+    Async,
     Watch,
+    #[cfg(feature = "unstable")]
+    Sync,
 }
 
 impl Default for FetchMethod {
     fn default() -> Self {
-        Self::Concurrent
+        Self::Async
     }
 }
 
@@ -158,6 +158,16 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
         })
     }
 
+    #[cfg(feature = "unstable")]
+    /// Create a new `Fetcher` instance with list of urls and db path synchronously
+    pub fn new_sync<P: AsRef<Path> + Send + Sync>(
+        config_path: P,
+        config_type: Mode,
+        db_path: P,
+    ) -> Result<Self> {
+        futures::executor::block_on(Self::new(config_path, config_type, db_path))
+    }
+
     /// Set the client to be used for fetching the data
     ///
     /// This is useful when you want to use a custom client with custom settings
@@ -178,18 +188,18 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
     /// and a `MultiProgress` instance is created
     pub fn set_response_method(&mut self, response_method: ResponseMethod) {
         self.response_method = response_method;
-        if response_method == ResponseMethod::Chunk
-            || response_method == ResponseMethod::BytesStream
-        {
-            self.notify_method = NotifyMethod::ProgressBar;
-        }
     }
 
     /// Set the notify method to be used for notifying the user
     /// By default `self.notify_method = NotifyMethod::Log`
     pub fn set_notify_method(&mut self, notify_method: NotifyMethod) {
         self.notify_method = notify_method;
-        if notify_method == NotifyMethod::ProgressBar {}
+        if notify_method == NotifyMethod::ProgressBar {
+            assert!(
+                (self.response_method == ResponseMethod::BytesStream)
+                    || (self.response_method == ResponseMethod::Chunk)
+            )
+        }
     }
 }
 
@@ -295,7 +305,7 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
     /// Enables to fetch packages in a watching state from a config file
     /// The config file is watched for changes and the packages are fetched
     ///
-    /// The fetching method is `concurrent` and the notification method is `log`
+    /// The fetching method is `Async` and the notification method is `log`
     pub async fn watching(&mut self) {
         info!("Watching {}", &self.config_path.display());
         if let Err(e) = self.watch().await {
@@ -320,6 +330,7 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
     }
 
     async fn watch(&mut self) -> notify::Result<()> {
+        self.notify_method = NotifyMethod::Log;
         let (mut watcher, mut rx) = Self::watcher().await?;
         watcher.watch(&self.config_path, RecursiveMode::Recursive)?;
 
@@ -337,7 +348,7 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
         match event.kind {
             EventKind::Modify(_) => {
                 self.config = Config::from_file(&self.config_path, self.config_type).await?;
-                self.concurrent_fetch().await?;
+                self.async_fetch().await?;
             }
             EventKind::Remove(_) => {
                 info!("Removed {}", &self.config_path.display());
@@ -349,7 +360,7 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
         Ok(())
     }
 
-    async fn handle_entry_conc(&self, entry: E) -> Result<()> {
+    async fn handle_entry(&self, entry: E) -> Result<()> {
         let key = entry.key();
         let mut value = entry.value();
 
@@ -381,18 +392,19 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
         Ok(())
     }
 
+    #[cfg(feature = "unstable")]
     fn handle_entry_sync(&self, entry: E) -> Result<()> {
-        futures::executor::block_on(self.handle_entry_conc(entry))?;
+        futures::executor::block_on(self.handle_entry(entry))?;
         Ok(())
     }
 
     /// Fetches and stores all results to the db
-    pub async fn concurrent_fetch(&mut self) -> Result<()> {
+    pub async fn async_fetch(&mut self) -> Result<()> {
         let mut tasks = Vec::new();
         for entry in (*self.entries).clone() {
             let fetcher = self.clone();
             tasks.push(tokio::spawn(async move {
-                fetcher.handle_entry_conc(entry.clone()).await
+                fetcher.handle_entry(entry.clone()).await
             }));
         }
 
@@ -401,6 +413,7 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
         Ok(())
     }
 
+    #[cfg(feature = "unstable")]
     /// Fetches and stores all results to the db synchronously and in parallel
     pub fn sync_fetch(&mut self) -> Result<()> {
         let entries = self.entries.clone();
@@ -417,8 +430,9 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
 
     pub async fn fetch(&mut self, method: FetchMethod) -> Result<()> {
         match method {
-            FetchMethod::Concurrent => self.concurrent_fetch().await?,
+            FetchMethod::Async => self.async_fetch().await?,
             FetchMethod::Watch => self.watching().await,
+            #[cfg(feature = "unstable")]
             FetchMethod::Sync => {
                 println!("Please use sync_fetch() for synchronous operations.")
                 // Honestly not sure how you would get here but here's a message I guess
