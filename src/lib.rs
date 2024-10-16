@@ -137,9 +137,7 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
         config_type: Mode,
         db_path: P,
     ) -> Result<Self> {
-        let client = Client::builder()
-            .brotli(true) // by default enable brotli decompression
-            .build()?;
+        let client = Client::builder().zstd(true).build()?;
 
         let config = Config::from_file(&config_path, config_type).await?;
         let entries = config.packages_owned();
@@ -253,53 +251,67 @@ impl<E: Entry + Clone + Send + Sync + 'static> Fetcher<E> {
 // Handles and Fetching Entries
 impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetcher<E> {
     async fn resp_bytes(&self, response: Response, name: String) -> Result<Bytes> {
+        let mut response = response;
         let len = response.content_length().unwrap_or(0);
-        let style = ProgressStyle::default_spinner()
-            .template("[{msg}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-            .unwrap()
-            .progress_chars("#>-");
+        let use_progress = matches!(self.notify_method, NotifyMethod::ProgressBar);
 
-        match &self.response_method {
-            ResponseMethod::Bytes => {
-                let bytes = response.bytes().await?;
-                Ok(bytes)
-            }
+        let pb = if use_progress {
+            Some(self.multi_pb.add(ProgressBar::new(len)))
+        } else {
+            None
+        };
+
+        if let Some(pb) = &pb {
+            pb.set_style(
+                ProgressStyle::default_spinner()
+                    .template("[{msg}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+                    .unwrap()
+                    .progress_chars("#>-"),
+            );
+            pb.set_message(name);
+        }
+
+        let bytes = match self.response_method {
+            ResponseMethod::Bytes => response.bytes().await?,
             ResponseMethod::BytesStream => {
                 let mut stream = response.bytes_stream();
-                let mut bytes = bytes::BytesMut::new();
+                let mut bytes = bytes::BytesMut::with_capacity(len as usize);
+                let mut downloaded = 0u64;
 
-                let pb = self.multi_pb.add(ProgressBar::new(len));
-                pb.set_style(style.clone());
-                pb.set_message(name.clone());
-                let mut downloaded: u64 = 0;
-
-                while let Some(item) = stream.next().await {
-                    let b = item?;
-                    downloaded += b.len() as u64;
-                    bytes.extend_from_slice(&b);
-                    pb.set_position(downloaded);
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk?;
+                    bytes.extend_from_slice(&chunk);
+                    if use_progress {
+                        downloaded += chunk.len() as u64;
+                        if let Some(pb) = &pb {
+                            pb.set_position(downloaded);
+                        }
+                    }
                 }
-                pb.finish();
-
-                Ok(bytes.freeze())
+                bytes.freeze()
             }
             ResponseMethod::Chunk => {
-                let mut bytes = bytes::BytesMut::new();
-                let mut response = response;
+                let mut bytes = bytes::BytesMut::with_capacity(len as usize);
+                let mut downloaded = 0u64;
 
-                let pb = self.multi_pb.add(ProgressBar::new(len));
-                pb.set_style(style.clone());
-                pb.set_message(name.clone());
-                let mut downloaded: u64 = 0;
                 while let Some(chunk) = response.chunk().await? {
-                    downloaded += chunk.len() as u64;
                     bytes.extend_from_slice(&chunk);
-                    pb.set_position(downloaded);
+                    if use_progress {
+                        downloaded += chunk.len() as u64;
+                        if let Some(pb) = &pb {
+                            pb.set_position(downloaded);
+                        }
+                    }
                 }
-                pb.finish();
-                Ok(bytes.freeze())
+                bytes.freeze()
             }
+        };
+
+        if let Some(pb) = pb {
+            pb.finish();
         }
+
+        Ok(bytes)
     }
 
     /// Enables to fetch packages in a watching state from a config file
@@ -363,32 +375,39 @@ impl<E: Entry + Clone + Send + Sync + 'static + for<'de> Deserialize<'de>> Fetch
     async fn handle_entry(&self, entry: E) -> Result<()> {
         let key = entry.key();
         let mut value = entry.value();
+        let key_bytes = key.bytes();
 
-        if let Some(curr_val) = self.db.get(key.bytes())? {
-            let cv_bytes = curr_val.to_vec();
-            let cv = E::Value::from_ivec(curr_val);
-            if !value.is_same(&cv) {
-                if self.notify_method == NotifyMethod::Log {
-                    key.log_caching();
-                }
-                let response = self.client.get(value.url()).send().await?;
-                let bytes = self.resp_bytes(response, key.to_string()).await?;
-                value.set_response(&bytes);
-                let _ =
-                    self.db
-                        .compare_and_swap(key.bytes(), Some(cv_bytes), Some(value.bytes()))?;
-            } else if self.notify_method == NotifyMethod::Log {
-                key.log_cache();
+        // Check if the entry exists and if it needs updating
+        let should_update = match self.db.get(&key_bytes)? {
+            Some(curr_val) => {
+                let cv = E::Value::from_ivec(curr_val.clone());
+                !value.is_same(&cv)
             }
-        } else {
+            None => true,
+        };
+
+        if should_update {
             if self.notify_method == NotifyMethod::Log {
                 key.log_caching();
             }
+
+            // Fetch new data
             let response = self.client.get(value.url()).send().await?;
             let bytes = self.resp_bytes(response, key.to_string()).await?;
-            value.set_response(bytes.as_ref());
-            let _ = self.db.insert(key.bytes(), value.bytes())?;
+            value.set_response(&bytes);
+
+            // Update the database
+            if let Some(curr_val) = self.db.get(&key_bytes)? {
+                let _ = self
+                    .db
+                    .compare_and_swap(key_bytes, Some(curr_val), Some(value.bytes()))?;
+            } else {
+                self.db.insert(key_bytes, value.bytes())?;
+            }
+        } else if self.notify_method == NotifyMethod::Log {
+            key.log_cache();
         }
+
         Ok(())
     }
 
