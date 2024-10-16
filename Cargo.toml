@@ -14,8 +14,8 @@ name = "mufiz_pkg"
 path = "examples/mufiz_pkg.rs"
 
 [[example]]
-name = "timer"
-path = "examples/timer.rs"
+name = "sync"
+path = "examples/sync.rs"
 
 [dependencies]
 anyhow = "1.0.86"
